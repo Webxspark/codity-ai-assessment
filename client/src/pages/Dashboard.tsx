@@ -124,7 +124,7 @@ export function Dashboard() {
 
   const handleOpenChat = (anomalyId: string) => {
     setChatAnomalyId(anomalyId);
-    setShowChat(true);
+    if (!showChat) setShowChat(true);
   };
 
   const handleAnomalySelect = (anomaly: Anomaly) => {
@@ -311,7 +311,6 @@ export function Dashboard() {
                 <ChatPanel
                   anomalyId={chatAnomalyId}
                   onClose={() => setShowChat(false)}
-                  key={chatAnomalyId}
                 />
               </div>
             )}

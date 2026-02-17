@@ -1,11 +1,30 @@
 /**
- * AI Chat panel — interactive chat with SSE streaming, tied to anomalies.
+ * AI Chat panel — interactive chat with SSE streaming, conversation history,
+ * and markdown rendering powered by Streamdown.
  */
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Button, Spinner } from "@heroui/react";
-import { Send, Bot, User, X, Sparkles } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import { sendChatMessage } from "../api/client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button, Chip, Spinner } from "@heroui/react";
+import {
+  Send,
+  Bot,
+  User,
+  X,
+  Sparkles,
+  Plus,
+  MessageSquare,
+  Clock,
+  ChevronLeft,
+} from "lucide-react";
+import { Streamdown } from "streamdown";
+import { code } from "@streamdown/code";
+import { format } from "date-fns";
+import {
+  sendChatMessage,
+  fetchConversations,
+  fetchConversation,
+} from "../api/client";
+import type { ChatConversation } from "../types";
 
 interface ChatPanelProps {
   anomalyId?: string;
@@ -17,26 +36,48 @@ interface ChatMsg {
   content: string;
 }
 
+type PanelView = "chat" | "history";
+
 export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [view, setView] = useState<PanelView>("chat");
+  const [contextAnomalyId, setContextAnomalyId] = useState<string | undefined>(
+    anomalyId
+  );
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const queryClient = useQueryClient();
+
+  // Track external anomalyId changes (from "Ask AI About This" button)
+  const prevAnomalyIdRef = useRef(anomalyId);
+
+  useEffect(() => {
+    if (anomalyId !== prevAnomalyIdRef.current) {
+      prevAnomalyIdRef.current = anomalyId;
+      setContextAnomalyId(anomalyId);
+    }
+  }, [anomalyId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Auto-ask about newly selected anomaly
   useEffect(() => {
-    if (anomalyId && messages.length === 0) {
-      handleSend(
-        "Analyze this anomaly. Explain why it was detected, what likely caused it, and suggest actionable fixes."
-      );
+    if (view === "chat") {
+      inputRef.current?.focus();
     }
-  }, [anomalyId]);
+  }, [view]);
+
+  // Fetch conversation history
+  const { data: conversations = [], isLoading: loadingHistory } = useQuery({
+    queryKey: ["chat-conversations"],
+    queryFn: fetchConversations,
+    refetchInterval: 30000,
+  });
 
   const handleSend = useCallback(
     async (overrideMessage?: string) => {
@@ -50,14 +91,18 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
       // Add empty assistant message that we'll stream into
       setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       try {
         const stream = sendChatMessage({
           message: msg,
-          anomaly_id: anomalyId,
+          anomaly_id: contextAnomalyId,
           conversation_id: conversationId || undefined,
         });
 
         for await (const chunk of stream) {
+          if (controller.signal.aborted) break;
           if (chunk.type === "chunk" && chunk.content) {
             setMessages((prev) => {
               const updated = [...prev];
@@ -71,6 +116,9 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
           }
           if (chunk.type === "done" && chunk.conversation_id) {
             setConversationId(chunk.conversation_id);
+            queryClient.invalidateQueries({
+              queryKey: ["chat-conversations"],
+            });
           }
           if (chunk.type === "error") {
             setMessages((prev) => {
@@ -80,27 +128,66 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
                 ...updated[lastIdx],
                 content:
                   updated[lastIdx].content +
-                  `\n\n⚠️ Error: ${chunk.content}`,
+                  `\n\n> **Error:** ${chunk.content}`,
               };
               return updated;
             });
           }
         }
       } catch (error) {
-        setMessages((prev) => {
-          const updated = [...prev];
-          const lastIdx = updated.length - 1;
-          updated[lastIdx] = {
-            ...updated[lastIdx],
-            content: `⚠️ Failed to get response: ${error instanceof Error ? error.message : "Unknown error"}`,
-          };
-          return updated;
-        });
+        if (!controller.signal.aborted) {
+          setMessages((prev) => {
+            const updated = [...prev];
+            const lastIdx = updated.length - 1;
+            updated[lastIdx] = {
+              ...updated[lastIdx],
+              content: `> **Error:** ${error instanceof Error ? error.message : "Unknown error"}`,
+            };
+            return updated;
+          });
+        }
       } finally {
         setIsStreaming(false);
+        abortRef.current = null;
       }
     },
-    [input, isStreaming, anomalyId, conversationId]
+    [input, isStreaming, contextAnomalyId, conversationId, queryClient]
+  );
+
+  const handleStop = useCallback(() => {
+    abortRef.current?.abort();
+    setIsStreaming(false);
+  }, []);
+
+  const handleNewChat = useCallback(() => {
+    if (isStreaming) {
+      abortRef.current?.abort();
+      setIsStreaming(false);
+    }
+    setMessages([]);
+    setConversationId(null);
+    setContextAnomalyId(anomalyId);
+    setView("chat");
+  }, [anomalyId, isStreaming]);
+
+  const handleLoadConversation = useCallback(
+    async (conv: ChatConversation) => {
+      try {
+        const full = await fetchConversation(conv.id);
+        setMessages(
+          full.messages.map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          }))
+        );
+        setConversationId(conv.id);
+        setContextAnomalyId(conv.anomaly_id || undefined);
+        setView("chat");
+      } catch {
+        setView("chat");
+      }
+    },
+    []
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -110,12 +197,133 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
     }
   };
 
-  const quickQuestions = [
-    "Why did this anomaly happen?",
-    "What code changes could have caused this?",
-    "How can I mitigate this issue?",
-    "Compare this with the baseline behavior",
-  ];
+  const quickQuestions = contextAnomalyId
+    ? [
+        "Analyze this anomaly — what caused it?",
+        "What code changes might be related?",
+        "How can I mitigate this issue?",
+        "Is this a false positive?",
+      ]
+    : [
+        "What anomalies have been detected?",
+        "Which service has the most issues?",
+        "Are there any cascading failures?",
+        "Summarize the system health",
+      ];
+
+  // ── History View ──────────────────────────────────────────────────
+
+  if (view === "history") {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setView("chat")}
+              className="p-1 rounded-lg hover:bg-surface-secondary transition-colors"
+            >
+              <ChevronLeft size={16} className="text-muted" />
+            </button>
+            <h3 className="text-sm font-semibold text-foreground">
+              Chat History
+            </h3>
+          </div>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1 rounded-lg hover:bg-surface-secondary transition-colors"
+            >
+              <X size={16} className="text-muted" />
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {loadingHistory ? (
+            <div className="flex items-center justify-center h-32">
+              <Spinner size="sm" />
+            </div>
+          ) : conversations.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-4">
+              <MessageSquare size={32} className="text-muted" />
+              <p className="text-sm text-muted">No conversations yet</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onPress={() => setView("chat")}
+              >
+                Start a conversation
+              </Button>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {conversations.map((conv) => {
+                const firstUserMsg = conv.messages?.find(
+                  (m) => m.role === "user"
+                );
+                const preview =
+                  firstUserMsg?.content?.slice(0, 80) || "Empty conversation";
+
+                return (
+                  <button
+                    key={conv.id}
+                    onClick={() => handleLoadConversation(conv)}
+                    className={`w-full text-left px-4 py-3 hover:bg-surface-secondary transition-colors ${
+                      conv.id === conversationId ? "bg-surface-secondary" : ""
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <MessageSquare
+                        size={14}
+                        className="text-muted mt-0.5 shrink-0"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-foreground truncate">
+                          {preview}
+                          {preview.length >= 80 ? "..." : ""}
+                        </p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-xs text-muted flex items-center gap-1">
+                            <Clock size={10} />
+                            {format(
+                              new Date(conv.created_at),
+                              "MMM d, HH:mm"
+                            )}
+                          </span>
+                          <span className="text-xs text-muted">
+                            {conv.messages?.length || 0} msgs
+                          </span>
+                          {conv.anomaly_id && (
+                            <Chip size="sm" variant="soft" color="accent">
+                              anomaly
+                            </Chip>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-border p-3">
+          <Button
+            size="sm"
+            variant="primary"
+            className="w-full"
+            onPress={handleNewChat}
+          >
+            <Plus size={14} />
+            New Conversation
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Chat View ─────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col h-full">
@@ -127,41 +335,80 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
             AI Assistant
           </h3>
         </div>
-        {onClose && (
+        <div className="flex items-center gap-1">
           <button
-            onClick={onClose}
-            className="p-1 rounded-lg hover:bg-surface-secondary transition-colors"
+            onClick={handleNewChat}
+            title="New conversation"
+            className="p-1.5 rounded-lg hover:bg-surface-secondary transition-colors"
           >
-            <X size={16} className="text-muted" />
+            <Plus size={14} className="text-muted" />
           </button>
-        )}
+          <button
+            onClick={() => setView("history")}
+            title="View history"
+            className="p-1.5 rounded-lg hover:bg-surface-secondary transition-colors"
+          >
+            <Clock size={14} className="text-muted" />
+          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-surface-secondary transition-colors"
+            >
+              <X size={14} className="text-muted" />
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Anomaly context badge */}
+      {contextAnomalyId && (
+        <div className="px-4 py-2 border-b border-border bg-surface-secondary/50">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted">Context:</span>
+            <Chip size="sm" variant="soft" color="accent">
+              Anomaly {contextAnomalyId.slice(0, 8)}
+            </Chip>
+            <button
+              onClick={() => setContextAnomalyId(undefined)}
+              className="ml-auto p-0.5 rounded hover:bg-surface-secondary transition-colors"
+              title="Remove anomaly context"
+            >
+              <X size={12} className="text-muted" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full gap-4 text-center">
-            <Bot size={40} className="text-muted" />
+            <div className="p-3 rounded-2xl bg-primary/10">
+              <Bot size={28} className="text-primary" />
+            </div>
             <div>
               <p className="text-sm font-medium text-foreground">
-                Ask me about anomalies
+                {contextAnomalyId
+                  ? "Ask about this anomaly"
+                  : "Ask me anything"}
               </p>
-              <p className="text-xs text-muted mt-1">
-                I can analyze metrics, correlate with code changes, and suggest
-                fixes
+              <p className="text-xs text-muted mt-1 max-w-[250px]">
+                {contextAnomalyId
+                  ? "I have context about this anomaly — ask about root causes, impact, or fixes"
+                  : "I can analyze metrics, correlate with code changes, and suggest fixes"}
               </p>
             </div>
             <div className="flex flex-col gap-2 w-full max-w-xs">
               {quickQuestions.map((q) => (
-                <Button
+                <button
                   key={q}
-                  size="sm"
-                  variant="outline"
-                  className="text-xs justify-start"
-                  onPress={() => handleSend(q)}
+                  onClick={() => handleSend(q)}
+                  disabled={isStreaming}
+                  className="text-xs text-left px-3 py-2 rounded-lg border border-border hover:bg-surface-secondary transition-colors text-foreground disabled:opacity-50"
                 >
                   {q}
-                </Button>
+                </button>
               ))}
             </div>
           </div>
@@ -170,33 +417,33 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
         {messages.map((msg, i) => (
           <div
             key={i}
-            className={`flex gap-2 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            className={`flex gap-2.5 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
           >
             {msg.role === "assistant" && (
-              <div className="shrink-0 p-1.5 rounded-lg bg-primary/10 h-fit">
+              <div className="shrink-0 p-1.5 rounded-lg bg-primary/10 h-fit mt-0.5">
                 <Bot size={14} className="text-primary" />
               </div>
             )}
             <div
-              className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+              className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm ${
                 msg.role === "user"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-surface-secondary text-foreground"
+                  ? "bg-primary text-primary-foreground rounded-br-md"
+                  : "bg-surface-secondary text-foreground rounded-bl-md"
               }`}
             >
               {msg.role === "assistant" ? (
-                <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                  <ReactMarkdown>{msg.content}</ReactMarkdown>
-                  {isStreaming && i === messages.length - 1 && (
-                    <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5" />
-                  )}
-                </div>
+                <Streamdown
+                  plugins={{ code }}
+                  isAnimating={isStreaming && i === messages.length - 1}
+                >
+                  {msg.content || " "}
+                </Streamdown>
               ) : (
-                <p>{msg.content}</p>
+                <p className="whitespace-pre-wrap">{msg.content}</p>
               )}
             </div>
             {msg.role === "user" && (
-              <div className="shrink-0 p-1.5 rounded-lg bg-surface-secondary h-fit">
+              <div className="shrink-0 p-1.5 rounded-lg bg-surface-secondary h-fit mt-0.5">
                 <User size={14} className="text-muted" />
               </div>
             )}
@@ -207,13 +454,24 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
 
       {/* Input */}
       <div className="border-t border-border px-4 py-3">
+        {isStreaming && (
+          <div className="flex justify-center mb-2">
+            <Button size="sm" variant="outline" onPress={handleStop}>
+              Stop generating
+            </Button>
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about this anomaly..."
+            placeholder={
+              contextAnomalyId
+                ? "Ask about this anomaly..."
+                : "Ask about your metrics..."
+            }
             rows={1}
             className="flex-1 resize-none rounded-xl border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-primary/40 max-h-32"
             disabled={isStreaming}
@@ -226,9 +484,15 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
             onPress={() => handleSend()}
             className="shrink-0"
           >
-            {isStreaming ? <Spinner size="sm" /> : <Send size={14} />}
+            <Send size={14} />
           </Button>
         </div>
+        {conversationId && (
+          <p className="text-[10px] text-muted mt-1.5 text-center">
+            Conversation {conversationId.slice(0, 8)} &middot;{" "}
+            {messages.filter((m) => m.role === "user").length} messages
+          </p>
+        )}
       </div>
     </div>
   );
