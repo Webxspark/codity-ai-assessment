@@ -38,6 +38,9 @@ async def send_message(
         content=payload.message,
     )
 
+    # Commit conversation + user message so they persist before streaming
+    await db.commit()
+
     # Build context and stream response
     async def event_stream():
         full_response = ""
@@ -61,6 +64,7 @@ async def send_message(
                 role="assistant",
                 content=full_response,
             )
+            await db.commit()
 
             # Send done signal
             done_data = json.dumps({

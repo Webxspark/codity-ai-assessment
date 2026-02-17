@@ -16,6 +16,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - global-pc-net
 
   # ── FastAPI Backend ────────────────────────────────────────────
   backend:
@@ -39,6 +41,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - global-pc-net
 
   # ── React Frontend (Nginx) ────────────────────────────────────
   frontend:
@@ -51,6 +57,12 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    networks:
+      - global-pc-net
 
 volumes:
   pgdata:
+
+networks:
+  global-pc-net:
+    external: true

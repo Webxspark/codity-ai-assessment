@@ -241,7 +241,7 @@ export function Dashboard() {
                 </div>
               </div>
 
-              {/* Bottom section: Anomaly list + detail/timeline */}
+              {/* Bottom section: Anomaly list + detail + timeline */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Anomaly list */}
                 <div className="lg:col-span-1">
@@ -258,7 +258,7 @@ export function Dashboard() {
                   </div>
                 </div>
 
-                {/* Detail or timeline */}
+                {/* Detail panel */}
                 <div className="lg:col-span-2">
                   {selectedAnomaly ? (
                     <div>
@@ -283,20 +283,25 @@ export function Dashboard() {
                       />
                     </div>
                   ) : (
-                    <div>
-                      <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
-                        <History size={16} />
-                        Recent Events
-                      </h2>
-                      <Card variant="secondary" className="p-4">
-                        <DeploymentTimeline
-                          deployments={deployments}
-                          configChanges={configChanges}
-                        />
-                      </Card>
+                    <div className="flex items-center justify-center h-48 text-sm text-muted border border-dashed border-border rounded-lg">
+                      Select an anomaly to see details
                     </div>
                   )}
                 </div>
+              </div>
+
+              {/* Deployment Timeline — always visible */}
+              <div>
+                <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+                  <History size={16} />
+                  Deployment &amp; Config Timeline
+                </h2>
+                <Card variant="secondary" className="p-4">
+                  <DeploymentTimeline
+                    deployments={deployments}
+                    configChanges={configChanges}
+                  />
+                </Card>
               </div>
             </div>
 
