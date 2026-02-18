@@ -4,7 +4,7 @@
  */
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button, Chip, Spinner } from "@heroui/react";
+import { Button, Chip, Spinner, TextArea } from "@heroui/react";
 import {
   Send,
   Bot,
@@ -15,9 +15,13 @@ import {
   MessageSquare,
   Clock,
   ChevronLeft,
+  Copy,
+  RefreshCw,
 } from "lucide-react";
 import { Streamdown } from "streamdown";
 import { code } from "@streamdown/code";
+import "streamdown/styles.css";
+
 import { format } from "date-fns";
 import {
   sendChatMessage,
@@ -52,9 +56,9 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
   // Helper to look up anomaly details by ID
   const getAnomalyInfo = (id: string) =>
     anomalies.find((a) => a.id === id);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
   // Track external anomalyId changes (from "Ask AI About This" button)
@@ -75,14 +79,14 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
   };
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  useEffect(() => {
     if (view === "chat") {
       inputRef.current?.focus();
     }
   }, [view]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   // Fetch conversation history
   const { data: conversations = [], isLoading: loadingHistory } = useQuery({
@@ -212,17 +216,17 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
   const hasContext = contextAnomalyIds.length > 0;
   const quickQuestions = hasContext
     ? [
-        "Analyze this anomaly — what caused it?",
-        "What code changes might be related?",
-        "How can I mitigate this issue?",
-        "Is this a false positive?",
-      ]
+      "Analyze this anomaly — what caused it?",
+      "What code changes might be related?",
+      "How can I mitigate this issue?",
+      "Is this a false positive?",
+    ]
     : [
-        "What anomalies have been detected?",
-        "Which service has the most issues?",
-        "Are there any cascading failures?",
-        "Summarize the system health",
-      ];
+      "What anomalies have been detected?",
+      "Which service has the most issues?",
+      "Are there any cascading failures?",
+      "Summarize the system health",
+    ];
 
   // ── History View ──────────────────────────────────────────────────
 
@@ -281,9 +285,8 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
                   <button
                     key={conv.id}
                     onClick={() => handleLoadConversation(conv)}
-                    className={`w-full text-left px-4 py-3 hover:bg-surface-secondary transition-colors ${
-                      conv.id === conversationId ? "bg-surface-secondary" : ""
-                    }`}
+                    className={`w-full text-left px-4 py-3 hover:bg-surface-secondary transition-colors ${conv.id === conversationId ? "bg-surface-secondary" : ""
+                      }`}
                   >
                     <div className="flex items-start gap-2">
                       <MessageSquare
@@ -392,7 +395,7 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
                   <span key={id} className="inline-flex items-center gap-0.5">
                     <Chip size="sm" variant="soft" color={chipColor}>
                       {info
-                        ? `${info.service_name} / ${info.metric_name}`
+                        ? `${info.service_name} / ${info.metric_name} (${info.confidence_score >= 0 ? (info.confidence_score * 100).toFixed(0) + "%" : "—"})`
                         : `Anomaly ${id.slice(0, 8)}`}
                     </Chip>
                     <button
@@ -423,7 +426,7 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
                   ? "Ask about this anomaly"
                   : "Ask me anything"}
               </p>
-              <p className="text-xs text-muted mt-1 max-w-[280px]">
+              <p className="text-xs text-muted mt-1 max-w-70">
                 {hasContext
                   ? "I have context about this anomaly — ask about root causes, impact, or fixes"
                   : "I can analyze metrics, correlate with code changes, and suggest fixes"}
@@ -454,22 +457,57 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
                 <Bot size={14} className="text-primary" />
               </div>
             )}
-            <div
-              className={`max-w-[90%] rounded-2xl px-3.5 py-2.5 text-sm overflow-hidden ${
-                msg.role === "user"
-                  ? "bg-primary text-primary-foreground rounded-br-md"
-                  : "bg-surface-secondary text-foreground rounded-bl-md chat-assistant-msg"
-              }`}
-            >
-              {msg.role === "assistant" ? (
-                <Streamdown
-                  plugins={{ code }}
-                  isAnimating={isStreaming && i === messages.length - 1}
-                >
-                  {msg.content || " "}
-                </Streamdown>
-              ) : (
-                <p className="whitespace-pre-wrap">{msg.content}</p>
+            <div className="flex flex-col gap-1 max-w-[90%]">
+              <div
+                className={`rounded-2xl px-3.5 py-2.5 text-sm overflow-hidden ${
+                  msg.role === "user"
+                    ? "bg-primary text-primary-foreground rounded-br-md"
+                    : "border text-foreground rounded-bl-md chat-assistant-msg"
+                }`}
+              >
+                {msg.role === "assistant" ? (
+                  msg.content ? (
+                    <Streamdown
+                      plugins={{ code }}
+                      shikiTheme={["catppuccin-latte", "catppuccin-mocha"]}
+                      isAnimating={isStreaming && i === messages.length - 1}
+                    >
+                      {msg.content}
+                    </Streamdown>
+                  ) : (
+                    <span className="shimmer shimmer-invert text-foreground/60 text-xs">
+                      Thinking...
+                    </span>
+                  )
+                ) : (
+                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                )}
+              </div>
+              {msg.role === "assistant" && msg.content && !isStreaming && (
+                <div className="flex items-center gap-1 ml-1">
+                  <button
+                    onClick={() => navigator.clipboard.writeText(msg.content)}
+                    className="p-1 rounded hover:bg-surface-secondary transition-colors text-muted hover:text-foreground"
+                    title="Copy"
+                  >
+                    <Copy size={12} />
+                  </button>
+                  {i === messages.length - 1 && (
+                    <button
+                      onClick={() => {
+                        const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+                        if (lastUserMsg) {
+                          setMessages((prev) => prev.slice(0, -1));
+                          handleSend(lastUserMsg.content);
+                        }
+                      }}
+                      className="p-1 rounded hover:bg-surface-secondary transition-colors text-muted hover:text-foreground"
+                      title="Retry"
+                    >
+                      <RefreshCw size={12} />
+                    </button>
+                  )}
+                </div>
               )}
             </div>
             {msg.role === "user" && (
@@ -492,7 +530,7 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
           </div>
         )}
         <div className="flex items-end gap-2">
-          <textarea
+          <TextArea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -503,6 +541,7 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
                 : "Ask about your metrics..."
             }
             rows={1}
+            fullWidth
             className="flex-1 resize-none rounded-xl border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-primary/40 max-h-32"
             disabled={isStreaming}
           />
