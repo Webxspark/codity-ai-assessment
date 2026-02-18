@@ -1,7 +1,10 @@
 /**
  * Main dashboard page — metrics overview, anomaly list, detail panel, and AI chat.
+ *
+ * Heavy components are lazily loaded via React.lazy + Suspense so the initial
+ * bundle stays small and the page above-the-fold renders faster.
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, Button, Chip, Spinner } from "@heroui/react";
 import {
@@ -24,13 +27,39 @@ import {
 } from "../api/client";
 import type { Anomaly, MetricDataPoint } from "../types";
 
+// ── Eagerly loaded (lightweight / always visible) ───────────────────
 import { ServiceOverview } from "../components/ServiceOverview";
-import { MetricChart } from "../components/MetricChart";
 import { AnomalyList } from "../components/AnomalyList";
-import { AnomalyDetail } from "../components/AnomalyDetail";
-import { ChatPanel } from "../components/ChatPanel";
-import { DeploymentTimeline } from "../components/DeploymentTimeline";
-import { MockDataDialog } from "../components/MockDataDialog";
+
+// ── Lazily loaded (heavy / conditionally visible) ───────────────────
+const MetricChart = lazy(() =>
+  import("../components/MetricChart").then((m) => ({ default: m.MetricChart }))
+);
+const AnomalyDetail = lazy(() =>
+  import("../components/AnomalyDetail").then((m) => ({ default: m.AnomalyDetail }))
+);
+const ChatPanel = lazy(() =>
+  import("../components/ChatPanel").then((m) => ({ default: m.ChatPanel }))
+);
+const DeploymentTimeline = lazy(() =>
+  import("../components/DeploymentTimeline").then((m) => ({
+    default: m.DeploymentTimeline,
+  }))
+);
+const MockDataDialog = lazy(() =>
+  import("../components/MockDataDialog").then((m) => ({
+    default: m.MockDataDialog,
+  }))
+);
+
+/** Shared fallback spinner for Suspense boundaries */
+function LazyFallback() {
+  return (
+    <div className="flex items-center justify-center py-8">
+      <Spinner size="sm" />
+    </div>
+  );
+}
 
 export function Dashboard() {
   const [selectedService, setSelectedService] = useState<string | null>(null);
@@ -142,16 +171,16 @@ export function Dashboard() {
     <div className="flex h-screen overflow-hidden bg-background">
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Top bar */}
-        <header className="shrink-0 border-b border-border px-6 py-3 flex items-center justify-between bg-surface">
-          <div className="flex items-center gap-3">
-            <Activity size={22} className="text-primary" />
-            <h1 className="text-lg font-bold text-foreground">CodityAI</h1>
-            <span className="text-xs text-muted">
+        {/* Top bar — wraps on mobile */}
+        <header className="shrink-0 border-b border-border px-3 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2 bg-surface">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <Activity size={22} className="text-primary shrink-0" />
+            <h1 className="text-base sm:text-lg font-bold text-foreground truncate">CodityAI</h1>
+            <span className="text-xs text-muted hidden sm:inline">
               Metrics Anomaly Detection & Code Insight
             </span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3 flex-wrap">
             {criticalCount > 0 && (
               <Chip color="danger" variant="soft" size="sm">
                 {criticalCount} Critical
@@ -162,7 +191,9 @@ export function Dashboard() {
                 {warningCount} Warning
               </Chip>
             )}
-            <MockDataDialog />
+            <Suspense fallback={null}>
+              <MockDataDialog />
+            </Suspense>
             <Button
               size="sm"
               variant="outline"
@@ -174,7 +205,7 @@ export function Dashboard() {
               ) : (
                 <RefreshCw size={14} />
               )}
-              {isDetecting ? "Detecting..." : "Run Detection"}
+              <span className="hidden sm:inline">{isDetecting ? "Detecting..." : "Run Detection"}</span>
             </Button>
             <Button
               size="sm"
@@ -186,7 +217,7 @@ export function Dashboard() {
               ) : (
                 <PanelRightOpen size={14} />
               )}
-              AI Chat
+              <span className="hidden sm:inline">AI Chat</span>
             </Button>
           </div>
         </header>
@@ -196,9 +227,9 @@ export function Dashboard() {
             <Spinner size="lg" />
           </div>
         ) : (
-          <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 flex overflow-hidden relative">
             {/* Left panel — content area */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6">
               {/* Service overview cards */}
               <ServiceOverview
                 summaries={summaries}
@@ -230,13 +261,15 @@ export function Dashboard() {
                     const data = metricQueries.data?.[key] || [];
                     const chartAnomalies = getChartAnomalies(service, metric);
                     return (
-                      <Card key={key} variant="secondary" className="p-4">
-                        <MetricChart
-                          data={data}
-                          anomalies={chartAnomalies}
-                          title={`${service} / ${metric}`}
-                          onAnomalyClick={handleAnomalySelect}
-                        />
+                      <Card key={key} variant="secondary" className="p-3 sm:p-4">
+                        <Suspense fallback={<LazyFallback />}>
+                          <MetricChart
+                            data={data}
+                            anomalies={chartAnomalies}
+                            title={`${service} / ${metric}`}
+                            onAnomalyClick={handleAnomalySelect}
+                          />
+                        </Suspense>
                       </Card>
                     );
                   })}
@@ -244,14 +277,14 @@ export function Dashboard() {
               </div>
 
               {/* Bottom section: Anomaly list + detail + timeline */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
                 {/* Anomaly list */}
                 <div className="lg:col-span-1">
                   <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
                     <AlertTriangle size={16} />
                     Anomalies ({filteredAnomalies.length})
                   </h2>
-                  <div className="max-h-[500px] overflow-y-auto pr-1">
+                  <div className="max-h-80 sm:max-h-125 overflow-y-auto pr-1 p-3">
                     <AnomalyList
                       anomalies={filteredAnomalies}
                       selectedId={selectedAnomaly?.id}
@@ -277,12 +310,14 @@ export function Dashboard() {
                           Close
                         </Button>
                       </div>
-                      <AnomalyDetail
-                        anomaly={selectedAnomaly}
-                        deployments={deployments}
-                        configChanges={configChanges}
-                        onOpenChat={handleOpenChat}
-                      />
+                      <Suspense fallback={<LazyFallback />}>
+                        <AnomalyDetail
+                          anomaly={selectedAnomaly}
+                          deployments={deployments}
+                          configChanges={configChanges}
+                          onOpenChat={handleOpenChat}
+                        />
+                      </Suspense>
                     </div>
                   ) : (
                     <div className="flex items-center justify-center h-48 text-sm text-muted border border-dashed border-border rounded-lg">
@@ -298,23 +333,27 @@ export function Dashboard() {
                   <History size={16} />
                   Deployment &amp; Config Timeline
                 </h2>
-                <Card variant="secondary" className="p-4">
-                  <DeploymentTimeline
-                    deployments={deployments}
-                    configChanges={configChanges}
-                  />
+                <Card variant="secondary" className="p-3 sm:p-4">
+                  <Suspense fallback={<LazyFallback />}>
+                    <DeploymentTimeline
+                      deployments={deployments}
+                      configChanges={configChanges}
+                    />
+                  </Suspense>
                 </Card>
               </div>
             </div>
 
-            {/* Right panel — AI Chat */}
+            {/* Right panel — AI Chat (overlay on mobile, sidebar on desktop) */}
             {showChat && (
-              <div className="w-[520px] shrink-0 border-l border-border bg-surface">
-                <ChatPanel
-                  anomalyId={chatAnomalyId}
-                  anomalies={anomalies}
-                  onClose={() => setShowChat(false)}
-                />
+              <div className="fixed inset-0 z-40 bg-surface md:static md:inset-auto md:z-auto md:w-130 shrink-0 md:border-l border-border">
+                <Suspense fallback={<LazyFallback />}>
+                  <ChatPanel
+                    anomalyId={chatAnomalyId}
+                    anomalies={anomalies}
+                    onClose={() => setShowChat(false)}
+                  />
+                </Suspense>
               </div>
             )}
           </div>

@@ -78,8 +78,8 @@ export function MetricChart({
           <Tooltip
             labelFormatter={(ts) => format(new Date(ts as number), "yyyy-MM-dd HH:mm")}
             contentStyle={{
-              backgroundColor: "var(--heroui-surface)",
-              border: "1px solid var(--heroui-border)",
+              backgroundColor: "var(--surface)",
+              border: "1px solid var(--accent)",
               borderRadius: "8px",
               fontSize: "12px",
             }}
