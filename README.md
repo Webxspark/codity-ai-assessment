@@ -83,6 +83,16 @@ For each anomaly, the system searches for deployments within a configurable time
 - **Service match** — same-service deployments get a 2× multiplier
 - **Change size** — larger changes (by commit count or files changed) get a slight boost
 
+### Before vs After Deployment Comparison
+
+The system provides a dedicated **deployment impact comparison** feature:
+
+- For any deployment, you can view all service metrics in a configurable window (±30m / ±60m / ±120m) around the deploy timestamp
+- Side-by-side statistics: mean, std, min, max before and after
+- Percentage change highlighting (e.g., +1850% error rate increase)
+- Dual-colour overlay chart with a vertical deployment marker
+- Available from both the Anomaly Detail panel and the Deployment Timeline
+
 ### Config Change Correlation
 
 Similar temporal search for configuration changes. The system highlights when config changes (e.g., connection pool size, rate limits) align with metric anomalies.
@@ -191,6 +201,7 @@ For detailed setup instructions, see [.notes/SETUP.md](.notes/SETUP.md).
 | GET | `/api/anomalies/{id}` | Get anomaly detail + correlations |
 | GET | `/api/code-context/services` | List registered services |
 | GET | `/api/code-context/deployments` | List deployment logs |
+| GET | `/api/code-context/deployments/{id}/comparison` | Before vs after deployment metrics comparison |
 | GET | `/api/code-context/config-changes` | List config changes |
 | POST | `/api/chat` | AI chat (SSE streaming response) |
 | GET | `/api/chat/{conversation_id}` | Get conversation history |

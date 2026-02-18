@@ -1,15 +1,22 @@
 """Code context endpoints - services, deployments, config changes."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.db_models import ServiceRegistry, DeploymentLog, ConfigChangeLog
-from app.models.schemas import ServiceRegistryOut, DeploymentLogOut, ConfigChangeLogOut
+from app.models.db_models import ServiceRegistry, DeploymentLog, ConfigChangeLog, MetricDataPoint
+from app.models.schemas import (
+    ServiceRegistryOut,
+    DeploymentLogOut,
+    ConfigChangeLogOut,
+    DeploymentComparisonOut,
+    DeploymentComparisonMetric,
+    MetricWindow,
+)
 
 router = APIRouter()
 
@@ -79,3 +86,126 @@ async def list_config_changes(
     stmt = stmt.order_by(ConfigChangeLog.timestamp.desc()).limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
+
+
+@router.get("/deployments/{deployment_id}/comparison", response_model=DeploymentComparisonOut)
+async def deployment_comparison(
+    deployment_id: UUID,
+    window_minutes: int = Query(60, ge=5, le=720, description="Minutes to compare before/after"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compare metric behaviour before vs after a deployment.
+
+    Returns all metrics for the deployment's service in the window
+    before and after the deployment timestamp.
+    """
+    # Look up the deployment
+    result = await db.execute(
+        select(DeploymentLog).where(DeploymentLog.id == deployment_id)
+    )
+    deploy = result.scalar_one_or_none()
+    if not deploy:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+
+    deploy_ts = deploy.timestamp
+    window = timedelta(minutes=window_minutes)
+    before_start = deploy_ts - window
+    after_end = deploy_ts + window
+
+    # Get all distinct metric names for this service
+    metric_names_result = await db.execute(
+        select(MetricDataPoint.metric_name)
+        .where(MetricDataPoint.service_name == deploy.service_name)
+        .distinct()
+    )
+    metric_names = [row[0] for row in metric_names_result.all()]
+
+    metrics: list[DeploymentComparisonMetric] = []
+
+    for metric_name in metric_names:
+        # Before window
+        before_result = await db.execute(
+            select(MetricDataPoint)
+            .where(
+                and_(
+                    MetricDataPoint.service_name == deploy.service_name,
+                    MetricDataPoint.metric_name == metric_name,
+                    MetricDataPoint.timestamp >= before_start,
+                    MetricDataPoint.timestamp < deploy_ts,
+                )
+            )
+            .order_by(MetricDataPoint.timestamp.asc())
+        )
+        before_points = before_result.scalars().all()
+
+        # After window
+        after_result = await db.execute(
+            select(MetricDataPoint)
+            .where(
+                and_(
+                    MetricDataPoint.service_name == deploy.service_name,
+                    MetricDataPoint.metric_name == metric_name,
+                    MetricDataPoint.timestamp >= deploy_ts,
+                    MetricDataPoint.timestamp <= after_end,
+                )
+            )
+            .order_by(MetricDataPoint.timestamp.asc())
+        )
+        after_points = after_result.scalars().all()
+
+        # Compute summary statistics
+        before_values = [p.value for p in before_points]
+        after_values = [p.value for p in after_points]
+
+        def _stats(vals: list[float]) -> dict:
+            if not vals:
+                return {"mean": None, "min": None, "max": None, "std": None}
+            mean = sum(vals) / len(vals)
+            variance = sum((v - mean) ** 2 for v in vals) / len(vals) if len(vals) > 1 else 0
+            return {
+                "mean": round(mean, 4),
+                "min": round(min(vals), 4),
+                "max": round(max(vals), 4),
+                "std": round(variance ** 0.5, 4),
+            }
+
+        before_stats = _stats(before_values)
+        after_stats = _stats(after_values)
+
+        # Calculate percentage change
+        pct_change = None
+        if before_stats["mean"] is not None and after_stats["mean"] is not None and before_stats["mean"] != 0:
+            pct_change = round(
+                ((after_stats["mean"] - before_stats["mean"]) / abs(before_stats["mean"])) * 100, 2
+            )
+
+        metrics.append(
+            DeploymentComparisonMetric(
+                metric_name=metric_name,
+                before=MetricWindow(
+                    start=before_start.isoformat(),
+                    end=deploy_ts.isoformat(),
+                    data_points=[
+                        {"timestamp": p.timestamp.isoformat(), "value": p.value}
+                        for p in before_points
+                    ],
+                    stats=before_stats,
+                ),
+                after=MetricWindow(
+                    start=deploy_ts.isoformat(),
+                    end=after_end.isoformat(),
+                    data_points=[
+                        {"timestamp": p.timestamp.isoformat(), "value": p.value}
+                        for p in after_points
+                    ],
+                    stats=after_stats,
+                ),
+                pct_change=pct_change,
+            )
+        )
+
+    return DeploymentComparisonOut(
+        deployment=deploy,
+        window_minutes=window_minutes,
+        metrics=metrics,
+    )

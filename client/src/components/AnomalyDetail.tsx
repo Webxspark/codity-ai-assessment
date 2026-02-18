@@ -1,6 +1,7 @@
 /**
  * Anomaly detail panel — shows explanation, code context, correlations, and metrics.
  */
+import { useState } from "react";
 import { Card, Chip, Button } from "@heroui/react";
 import { format } from "date-fns";
 import {
@@ -10,9 +11,11 @@ import {
   MessageSquare,
   ExternalLink,
   FileCode,
+  ArrowLeftRight,
 } from "lucide-react";
 import type { Anomaly, DeploymentLog, ConfigChangeLog } from "../types";
 import { SeverityBadge, AnomalyTypeBadge } from "./SeverityBadge";
+import { DeploymentComparisonChart } from "./DeploymentComparisonChart";
 
 interface AnomalyDetailProps {
   anomaly: Anomaly;
@@ -27,6 +30,8 @@ export function AnomalyDetail({
   configChanges,
   onOpenChat,
 }: AnomalyDetailProps) {
+  const [expandedDeployId, setExpandedDeployId] = useState<string | null>(null);
+
   // Filter deployments/config changes relevant to this anomaly's time window
   const anomalyTime = new Date(anomaly.detected_at).getTime();
   const windowMs = 60 * 60 * 1000; // 1 hour
@@ -177,6 +182,29 @@ export function AnomalyDetail({
                       >
                         View PR <ExternalLink size={10} />
                       </a>
+                    )}
+
+                    {/* Before vs After comparison toggle */}
+                    <Button
+                      size="sm"
+                      variant={expandedDeployId === deploy.id ? "primary" : "outline"}
+                      className="mt-2"
+                      onPress={() =>
+                        setExpandedDeployId(
+                          expandedDeployId === deploy.id ? null : deploy.id
+                        )
+                      }
+                    >
+                      <ArrowLeftRight size={12} />
+                      {expandedDeployId === deploy.id
+                        ? "Hide Comparison"
+                        : "Compare Before / After"}
+                    </Button>
+
+                    {expandedDeployId === deploy.id && (
+                      <div className="mt-3">
+                        <DeploymentComparisonChart deployment={deploy} />
+                      </div>
                     )}
                   </div>
                 );

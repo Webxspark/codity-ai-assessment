@@ -1,10 +1,12 @@
 /**
  * Deployment timeline showing recent deployments and config changes.
  */
-import { Chip } from "@heroui/react";
+import { useState } from "react";
+import { Chip, Button } from "@heroui/react";
 import { format } from "date-fns";
-import { GitCommit, Settings, FileCode } from "lucide-react";
+import { GitCommit, Settings, FileCode, ArrowLeftRight } from "lucide-react";
 import type { DeploymentLog, ConfigChangeLog } from "../types";
+import { DeploymentComparisonChart } from "./DeploymentComparisonChart";
 
 interface TimelineProps {
   deployments: DeploymentLog[];
@@ -21,6 +23,7 @@ export function DeploymentTimeline({
   deployments,
   configChanges,
 }: TimelineProps) {
+  const [expandedDeployId, setExpandedDeployId] = useState<string | null>(null);
   const events: TimelineEvent[] = [
     ...deployments.map(
       (d) =>
@@ -116,6 +119,34 @@ export function DeploymentTimeline({
                         </Chip>
                       )
                     )}
+                  </div>
+                )}
+                {/* Before vs After comparison */}
+                <Button
+                  size="sm"
+                  variant={
+                    expandedDeployId === (event.data as DeploymentLog).id
+                      ? "primary"
+                      : "outline"
+                  }
+                  className="mt-2"
+                  onPress={() => {
+                    const id = (event.data as DeploymentLog).id;
+                    setExpandedDeployId(
+                      expandedDeployId === id ? null : id
+                    );
+                  }}
+                >
+                  <ArrowLeftRight size={12} />
+                  {expandedDeployId === (event.data as DeploymentLog).id
+                    ? "Hide Comparison"
+                    : "Compare Before / After"}
+                </Button>
+                {expandedDeployId === (event.data as DeploymentLog).id && (
+                  <div className="mt-3">
+                    <DeploymentComparisonChart
+                      deployment={event.data as DeploymentLog}
+                    />
                   </div>
                 )}
               </div>

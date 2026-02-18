@@ -171,3 +171,25 @@ class HealthResponse(BaseModel):
 class ServiceListOut(BaseModel):
     services: list[str]
     metrics: dict[str, list[str]]  # service_name -> list of metric names
+
+
+# ── Deployment Comparison ────────────────────────────────────────────
+
+class MetricWindow(BaseModel):
+    start: str
+    end: str
+    data_points: list[dict]  # [{timestamp, value}, ...]
+    stats: dict  # {mean, min, max, std}
+
+
+class DeploymentComparisonMetric(BaseModel):
+    metric_name: str
+    before: MetricWindow
+    after: MetricWindow
+    pct_change: float | None = None  # % change in mean
+
+
+class DeploymentComparisonOut(BaseModel):
+    deployment: DeploymentLogOut
+    window_minutes: int
+    metrics: list[DeploymentComparisonMetric]

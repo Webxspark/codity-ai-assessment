@@ -13,6 +13,7 @@ import type {
   ConfigChangeLog,
   ChatConversation,
   ChatStreamChunk,
+  DeploymentComparison,
 } from "../types";
 
 const api = axios.create({
@@ -97,6 +98,17 @@ export async function fetchConfigChanges(params?: {
   to_ts?: string;
 }): Promise<ConfigChangeLog[]> {
   const { data } = await api.get<ConfigChangeLog[]>("/code-context/config-changes", { params });
+  return data;
+}
+
+export async function fetchDeploymentComparison(
+  deploymentId: string,
+  windowMinutes: number = 60,
+): Promise<DeploymentComparison> {
+  const { data } = await api.get<DeploymentComparison>(
+    `/code-context/deployments/${deploymentId}/comparison`,
+    { params: { window_minutes: windowMinutes } },
+  );
   return data;
 }
 

@@ -110,3 +110,32 @@ export interface ChatStreamChunk {
   content?: string;
   conversation_id?: string;
 }
+
+// ── Deployment Comparison ───────────────────────────────────────────
+
+export interface MetricWindowStats {
+  mean: number | null;
+  min: number | null;
+  max: number | null;
+  std: number | null;
+}
+
+export interface MetricWindow {
+  start: string;
+  end: string;
+  data_points: { timestamp: string; value: number }[];
+  stats: MetricWindowStats;
+}
+
+export interface DeploymentComparisonMetric {
+  metric_name: string;
+  before: MetricWindow;
+  after: MetricWindow;
+  pct_change: number | null;
+}
+
+export interface DeploymentComparison {
+  deployment: DeploymentLog;
+  window_minutes: number;
+  metrics: DeploymentComparisonMetric[];
+}
