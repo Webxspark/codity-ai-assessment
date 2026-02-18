@@ -1,5 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Dashboard } from "./pages/Dashboard";
+import { ThemeProvider } from "./components/theme-provider";
+import { TooltipProvider } from "./components/ui/tooltip";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -14,7 +16,11 @@ const queryClient = new QueryClient({
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Dashboard />
+      <ThemeProvider defaultTheme="light" storageKey="allan-codity-assessment">
+        <TooltipProvider>
+          <Dashboard />
+        </TooltipProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

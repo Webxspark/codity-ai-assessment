@@ -42,6 +42,20 @@
   --warning: oklch(78.19% 0.1617 74.73);
   --warning-foreground: oklch(21.03% 0.0059 74.73);
 
+  /* shadcn ↔ HeroUI aliases (needed by shadcn ui components) */
+  --secondary: var(--surface-secondary);
+  --secondary-foreground: var(--surface-secondary-foreground);
+  --muted-foreground: var(--muted);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--danger-foreground);
+  --ring: var(--focus);
+  --input: var(--border);
+  --primary-foreground: oklch(99.11% 0 0);
+  --card: var(--surface);
+  --card-foreground: var(--surface-foreground);
+  --popover: var(--overlay);
+  --popover-foreground: var(--overlay-foreground);
+
   /* Border Radius */
   --radius: 0.125rem;
   --field-radius: 0.5rem;
@@ -85,4 +99,18 @@
   --surface-tertiary-foreground: oklch(99.11% 0.0100 273.85);
   --warning: oklch(82.03% 0.1416 78.74);
   --warning-foreground: oklch(21.03% 0.0059 78.74);
+
+  /* shadcn ↔ HeroUI aliases (needed by shadcn ui components) */
+  --secondary: var(--surface-secondary);
+  --secondary-foreground: var(--surface-secondary-foreground);
+  --muted-foreground: var(--muted);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--danger-foreground);
+  --ring: var(--focus);
+  --input: var(--border);
+  --primary-foreground: oklch(99.11% 0 0);
+  --card: var(--surface);
+  --card-foreground: var(--surface-foreground);
+  --popover: var(--overlay);
+  --popover-foreground: var(--overlay-foreground);
 }
