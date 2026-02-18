@@ -24,10 +24,11 @@ import {
   fetchConversations,
   fetchConversation,
 } from "../api/client";
-import type { ChatConversation } from "../types";
+import type { ChatConversation, Anomaly } from "../types";
 
 interface ChatPanelProps {
   anomalyId?: string;
+  anomalies?: Anomaly[];
   onClose?: () => void;
 }
 
@@ -38,15 +39,19 @@ interface ChatMsg {
 
 type PanelView = "chat" | "history";
 
-export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
+export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [view, setView] = useState<PanelView>("chat");
-  const [contextAnomalyId, setContextAnomalyId] = useState<string | undefined>(
-    anomalyId
+  const [contextAnomalyIds, setContextAnomalyIds] = useState<string[]>(
+    anomalyId ? [anomalyId] : []
   );
+
+  // Helper to look up anomaly details by ID
+  const getAnomalyInfo = (id: string) =>
+    anomalies.find((a) => a.id === id);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -56,11 +61,18 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
   const prevAnomalyIdRef = useRef(anomalyId);
 
   useEffect(() => {
-    if (anomalyId !== prevAnomalyIdRef.current) {
+    if (anomalyId && anomalyId !== prevAnomalyIdRef.current) {
       prevAnomalyIdRef.current = anomalyId;
-      setContextAnomalyId(anomalyId);
+      // Add to context list if not already present
+      setContextAnomalyIds((prev) =>
+        prev.includes(anomalyId) ? prev : [...prev, anomalyId]
+      );
     }
   }, [anomalyId]);
+
+  const removeContextAnomaly = (id: string) => {
+    setContextAnomalyIds((prev) => prev.filter((a) => a !== id));
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -97,7 +109,7 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
       try {
         const stream = sendChatMessage({
           message: msg,
-          anomaly_id: contextAnomalyId,
+          anomaly_id: contextAnomalyIds[0],
           conversation_id: conversationId || undefined,
         });
 
@@ -151,7 +163,7 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
         abortRef.current = null;
       }
     },
-    [input, isStreaming, contextAnomalyId, conversationId, queryClient]
+    [input, isStreaming, contextAnomalyIds, conversationId, queryClient]
   );
 
   const handleStop = useCallback(() => {
@@ -166,7 +178,7 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
     }
     setMessages([]);
     setConversationId(null);
-    setContextAnomalyId(anomalyId);
+    setContextAnomalyIds(anomalyId ? [anomalyId] : []);
     setView("chat");
   }, [anomalyId, isStreaming]);
 
@@ -181,7 +193,7 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
           }))
         );
         setConversationId(conv.id);
-        setContextAnomalyId(conv.anomaly_id || undefined);
+        setContextAnomalyIds(conv.anomaly_id ? [conv.anomaly_id] : []);
         setView("chat");
       } catch {
         setView("chat");
@@ -197,7 +209,8 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
     }
   };
 
-  const quickQuestions = contextAnomalyId
+  const hasContext = contextAnomalyIds.length > 0;
+  const quickQuestions = hasContext
     ? [
         "Analyze this anomaly — what caused it?",
         "What code changes might be related?",
@@ -361,21 +374,38 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
         </div>
       </div>
 
-      {/* Anomaly context badge */}
-      {contextAnomalyId && (
+      {/* Anomaly context badges */}
+      {contextAnomalyIds.length > 0 && (
         <div className="px-4 py-2 border-b border-border bg-surface-secondary/50">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted">Context:</span>
-            <Chip size="sm" variant="soft" color="accent">
-              Anomaly {contextAnomalyId.slice(0, 8)}
-            </Chip>
-            <button
-              onClick={() => setContextAnomalyId(undefined)}
-              className="ml-auto p-0.5 rounded hover:bg-surface-secondary transition-colors"
-              title="Remove anomaly context"
-            >
-              <X size={12} className="text-muted" />
-            </button>
+          <div className="flex items-start gap-2 flex-wrap">
+            <span className="text-xs text-muted mt-1 shrink-0">Context:</span>
+            <div className="flex flex-wrap gap-1.5 flex-1 min-w-0">
+              {contextAnomalyIds.map((id) => {
+                const info = getAnomalyInfo(id);
+                const chipColor =
+                  info?.severity === "critical"
+                    ? "danger"
+                    : info?.severity === "warning"
+                      ? "warning"
+                      : "accent";
+                return (
+                  <span key={id} className="inline-flex items-center gap-0.5">
+                    <Chip size="sm" variant="soft" color={chipColor}>
+                      {info
+                        ? `${info.service_name} / ${info.metric_name}`
+                        : `Anomaly ${id.slice(0, 8)}`}
+                    </Chip>
+                    <button
+                      onClick={() => removeContextAnomaly(id)}
+                      className="p-0.5 rounded hover:bg-surface-secondary transition-colors"
+                      title="Remove from context"
+                    >
+                      <X size={10} className="text-muted" />
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -389,12 +419,12 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
             </div>
             <div>
               <p className="text-sm font-medium text-foreground">
-                {contextAnomalyId
+                {hasContext
                   ? "Ask about this anomaly"
                   : "Ask me anything"}
               </p>
-              <p className="text-xs text-muted mt-1 max-w-[250px]">
-                {contextAnomalyId
+              <p className="text-xs text-muted mt-1 max-w-[280px]">
+                {hasContext
                   ? "I have context about this anomaly — ask about root causes, impact, or fixes"
                   : "I can analyze metrics, correlate with code changes, and suggest fixes"}
               </p>
@@ -425,10 +455,10 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
               </div>
             )}
             <div
-              className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm ${
+              className={`max-w-[90%] rounded-2xl px-3.5 py-2.5 text-sm overflow-hidden ${
                 msg.role === "user"
                   ? "bg-primary text-primary-foreground rounded-br-md"
-                  : "bg-surface-secondary text-foreground rounded-bl-md"
+                  : "bg-surface-secondary text-foreground rounded-bl-md chat-assistant-msg"
               }`}
             >
               {msg.role === "assistant" ? (
@@ -468,7 +498,7 @@ export function ChatPanel({ anomalyId, onClose }: ChatPanelProps) {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={
-              contextAnomalyId
+              hasContext
                 ? "Ask about this anomaly..."
                 : "Ask about your metrics..."
             }

@@ -30,6 +30,7 @@ import { AnomalyList } from "../components/AnomalyList";
 import { AnomalyDetail } from "../components/AnomalyDetail";
 import { ChatPanel } from "../components/ChatPanel";
 import { DeploymentTimeline } from "../components/DeploymentTimeline";
+import { MockDataDialog } from "../components/MockDataDialog";
 
 export function Dashboard() {
   const [selectedService, setSelectedService] = useState<string | null>(null);
@@ -161,6 +162,7 @@ export function Dashboard() {
                 {warningCount} Warning
               </Chip>
             )}
+            <MockDataDialog />
             <Button
               size="sm"
               variant="outline"
@@ -307,9 +309,10 @@ export function Dashboard() {
 
             {/* Right panel — AI Chat */}
             {showChat && (
-              <div className="w-[400px] shrink-0 border-l border-border bg-surface">
+              <div className="w-[520px] shrink-0 border-l border-border bg-surface">
                 <ChatPanel
                   anomalyId={chatAnomalyId}
+                  anomalies={anomalies}
                   onClose={() => setShowChat(false)}
                 />
               </div>

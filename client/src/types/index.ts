@@ -139,3 +139,19 @@ export interface DeploymentComparison {
   window_minutes: number;
   metrics: DeploymentComparisonMetric[];
 }
+
+// ── Seed / Mock Data ────────────────────────────────────────────────
+
+export interface SeedStatus {
+  has_data: boolean;
+  counts: {
+    metric_data_points: number;
+    anomalies: number;
+    services: number;
+    deployments: number;
+    config_changes: number;
+    correlations: number;
+    conversations: number;
+    chat_messages: number;
+  };
+}

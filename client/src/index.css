@@ -53,3 +53,111 @@ body {
   background: transparent;
   padding: 0;
 }
+
+/* ── Streamdown chat message styling ──────────────────────────────── */
+
+/* Ensure assistant messages don't cause horizontal overflow */
+.chat-assistant-msg {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* Streamdown code blocks: must wrap and allow horizontal scroll */
+.chat-assistant-msg pre,
+.chat-assistant-msg [data-sd-code-block] {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--heroui-background, #f5f5f5);
+  border: 1px solid var(--heroui-border, #e5e7eb);
+}
+
+.chat-assistant-msg pre code,
+.chat-assistant-msg [data-sd-code-block] code {
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  font-size: 12px;
+  background: transparent;
+  padding: 0;
+}
+
+/* Inline code */
+.chat-assistant-msg code:not(pre code):not([data-sd-code-block] code) {
+  font-size: 12px;
+  background: var(--heroui-background, #f3f4f6);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* Streamdown tables: prevent overflow */
+.chat-assistant-msg table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 8px 0;
+}
+
+.chat-assistant-msg th,
+.chat-assistant-msg td {
+  border: 1px solid var(--heroui-border, #e5e7eb);
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.chat-assistant-msg th {
+  background: var(--heroui-background, #f5f5f5);
+  font-weight: 600;
+}
+
+/* Streamdown headings */
+.chat-assistant-msg h1,
+.chat-assistant-msg h2,
+.chat-assistant-msg h3,
+.chat-assistant-msg h4 {
+  font-weight: 600;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.chat-assistant-msg h1 { font-size: 16px; }
+.chat-assistant-msg h2 { font-size: 14px; }
+.chat-assistant-msg h3 { font-size: 13px; }
+.chat-assistant-msg h4 { font-size: 12px; }
+
+/* Lists */
+.chat-assistant-msg ul,
+.chat-assistant-msg ol {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+
+.chat-assistant-msg li {
+  margin: 2px 0;
+}
+
+/* Paragraphs */
+.chat-assistant-msg p {
+  margin: 4px 0;
+}
+
+/* Blockquotes */
+.chat-assistant-msg blockquote {
+  border-left: 3px solid var(--heroui-border, #e5e7eb);
+  padding-left: 10px;
+  margin: 6px 0;
+  color: var(--heroui-muted, #6b7280);
+}
+
+/* Checkbox styling in generated content */
+.chat-assistant-msg input[type="checkbox"] {
+  margin-right: 6px;
+}

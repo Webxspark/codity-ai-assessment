@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import init_db
-from app.routers import metrics, anomalies, code_context, chat
+from app.routers import metrics, anomalies, code_context, chat, seed
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ app.include_router(metrics.router, prefix="/api/metrics", tags=["Metrics"])
 app.include_router(anomalies.router, prefix="/api/anomalies", tags=["Anomalies"])
 app.include_router(code_context.router, prefix="/api/code-context", tags=["Code Context"])
 app.include_router(chat.router, prefix="/api/chat", tags=["AI Chat"])
+app.include_router(seed.router, prefix="/api/seed", tags=["Mock Data Seeding"])
 
 
 @app.get("/api/health", response_model=dict)

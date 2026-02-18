@@ -14,6 +14,7 @@ import type {
   ChatConversation,
   ChatStreamChunk,
   DeploymentComparison,
+  SeedStatus,
 } from "../types";
 
 const api = axios.create({
@@ -168,4 +169,16 @@ export async function* sendChatMessage(params: {
       }
     }
   }
+}
+
+// ── Seed / Mock Data ────────────────────────────────────────────────
+
+export async function fetchSeedStatus(): Promise<SeedStatus> {
+  const { data } = await api.get<SeedStatus>("/seed/status");
+  return data;
+}
+
+export async function generateSeedData(): Promise<SeedStatus> {
+  const { data } = await api.post<SeedStatus>("/seed/generate");
+  return data;
 }
