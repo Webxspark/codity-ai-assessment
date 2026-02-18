@@ -160,10 +160,17 @@ class AnomalyDetectorService:
             # Determine anomaly type
             anomaly_type = self._classify_anomaly_type(values, i, z_r, ewma_r)
 
-            # Determine severity
-            if score > 0.8:
+            # Determine severity using composite criteria:
+            # - Critical: confidence ≥ 75% AND (Z-Score > 6σ OR sustained ≥ 8 points)
+            # - Warning:  confidence ≥ 55% AND at least 2 methods triggered
+            # - Info:     anything else above MIN_CONFIDENCE
+            abs_z = abs(z_r.details.get("z_score", 0))
+            consecutive = ewma_r.details.get("consecutive_outside", 0)
+            methods_triggered = sum([z_r.is_anomaly, ewma_r.is_anomaly, iqr_r.is_anomaly])
+
+            if score >= 0.75 and (abs_z > 6 or consecutive >= 8):
                 severity = "critical"
-            elif score > 0.5:
+            elif score >= 0.55 and methods_triggered >= 2:
                 severity = "warning"
             else:
                 severity = "info"
