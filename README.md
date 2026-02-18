@@ -173,7 +173,7 @@ Responses are streamed via **Server-Sent Events (SSE)** for real-time display, w
 docker compose up --build -d
 
 # 2. Seed mock data (run once)
-docker compose exec backend python -m app.scripts.generate_mock_data
+docker compose exec backend python -m scripts.generate_mock_data
 
 # 3. Run anomaly detection
 curl -X POST http://localhost:8000/api/anomalies/detect \
@@ -181,7 +181,7 @@ curl -X POST http://localhost:8000/api/anomalies/detect \
   -d '{}'
 
 # 4. Open the dashboard
-open http://localhost:3000
+open http://localhost:8000
 ```
 
 For detailed setup instructions, see [.notes/SETUP.md](.notes/SETUP.md).
