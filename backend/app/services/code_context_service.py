@@ -135,13 +135,12 @@ class CodeContextService:
         return correlations
 
     async def _correlate_related_anomalies(self, anomaly: Anomaly) -> list[AnomalyCorrelation]:
-        """Find anomalies in other metrics around the same time."""
+        """Find anomalies across ALL services around the same time (cross-service correlation)."""
         window = timedelta(minutes=10)
 
         stmt = select(Anomaly).where(
             and_(
-                Anomaly.service_name == anomaly.service_name,
-                Anomaly.metric_name != anomaly.metric_name,
+                # Cross-service: match any service, just exclude the exact same anomaly
                 Anomaly.detected_at >= anomaly.detected_at - window,
                 Anomaly.detected_at <= anomaly.detected_at + window,
                 Anomaly.id != anomaly.id,
@@ -154,14 +153,26 @@ class CodeContextService:
         correlations = []
         for rel in related:
             time_diff = abs((anomaly.detected_at - rel.detected_at).total_seconds())
-            suspicion = max(0.3, 1 - time_diff / 600)
+            same_service = rel.service_name == anomaly.service_name
+            # Same-service anomalies are more suspicious; cross-service suggests cascading failure
+            base_suspicion = max(0.3, 1 - time_diff / 600)
+            suspicion = min(1.0, base_suspicion + (0.1 if same_service else 0.0))
 
-            explanation = (
-                f"Related anomaly in {rel.metric_name} at "
-                f"{rel.detected_at.strftime('%H:%M:%S')} "
-                f"(severity: {rel.severity}, value: {rel.metric_value:.2f}). "
-                f"Multiple metrics spiking simultaneously suggests a systemic issue."
-            )
+            if same_service:
+                explanation = (
+                    f"Related anomaly in {rel.metric_name} on same service at "
+                    f"{rel.detected_at.strftime('%H:%M:%S')} "
+                    f"(severity: {rel.severity}, value: {rel.metric_value:.2f}). "
+                    f"Multiple metrics spiking simultaneously suggests a systemic issue."
+                )
+            else:
+                explanation = (
+                    f"Cross-service anomaly: {rel.service_name}/{rel.metric_name} at "
+                    f"{rel.detected_at.strftime('%H:%M:%S')} "
+                    f"(severity: {rel.severity}, value: {rel.metric_value:.2f}). "
+                    f"Anomalies in multiple services within a short window suggest "
+                    f"a cascading failure or shared root cause."
+                )
 
             corr = AnomalyCorrelation(
                 anomaly_id=anomaly.id,
