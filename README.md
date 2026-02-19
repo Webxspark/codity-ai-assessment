@@ -68,71 +68,10 @@ I used GitHub Copilot (Claude Opus 4.6) as my implementation partner throughout 
 
 ## System Architecture
 
-```mermaid
-graph TB
-    subgraph Frontend["Frontend — React 19 + HeroUI v3"]
-        SO[Service Overview]
-        MC[Metric Charts]
-        AD[Anomaly Detail]
-        DT[Deployment Timeline]
-        DC[Deployment Comparison]
-        CP[AI Chat Panel]
-    end
-
-    subgraph Backend["Backend — FastAPI + Python 3.12"]
-        MR[Metrics Router]
-        AR[Anomalies Router]
-        CR[Code Context Router]
-        CHR[Chat Router]
-        
-        ADS[Anomaly Detector<br/>Z-Score + EWMA + IQR]
-        CCS[Code Context Service<br/>Correlation Engine]
-        ACS[AI Chat Service<br/>Tool-Calling Agent]
-    end
-
-    subgraph External["External"]
-        DB[(PostgreSQL 16)]
-        LLM[LLM via LiteLLM<br/>OpenAI-compatible]
-    end
-
-    Frontend -->|REST + SSE| Backend
-    MR & AR & CR --> DB
-    CHR --> ACS
-    AR --> ADS --> DB
-    AR --> CCS --> DB
-    ACS -->|Tool Calls| DB
-    ACS -->|Streaming| LLM
-```
+<img src=".docs/system-architecture.png" alt="System Architecture Diagram"/>
 
 ### Request Flow: From Question to Answer
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant FE as Frontend
-    participant API as FastAPI
-    participant AI as AI Chat Service
-    participant LLM as LLM (Gemini/GPT)
-    participant DB as PostgreSQL
-
-    U->>FE: "Why did p95 latency spike at 14:32?"
-    FE->>API: POST /api/chat (SSE stream)
-    API->>AI: generate_response()
-    AI->>LLM: System prompt + user message + tools
-
-    LLM-->>AI: tool_call: search_anomalies(metric="latency_p95")
-    AI->>DB: SELECT anomalies WHERE metric LIKE 'latency_p95'
-    DB-->>AI: [anomaly_id: abc-123, detected_at: 14:28]
-
-    AI->>LLM: Tool result + continue
-    LLM-->>AI: tool_call: get_anomaly_context(abc-123)
-    AI->>DB: Fetch correlations + deployments + config changes + metric trend
-    DB-->>AI: {deployment: v1.8.0 at 14:15, config_change: rate_limit 2000→500}
-
-    AI->>LLM: Full context + continue
-    LLM-->>FE: Stream analysis tokens in real-time
-    FE-->>U: "The latency spike correlates with deployment v1.8.0..."
-```
+<img src=".docs/request-flow.png" alt="Request Flow Diagram"/>
 
 ---
 
@@ -142,21 +81,7 @@ sequenceDiagram
 
 Three complementary statistical methods, each targeting a different anomaly pattern:
 
-```mermaid
-graph LR
-    MP[Metric Data Points] --> ZS[Z-Score<br/>weight: 40%]
-    MP --> EWMA[EWMA + Bollinger<br/>weight: 35%]
-    MP --> IQR[IQR Fences<br/>weight: 25%]
-
-    ZS --> WA[Weighted Average]
-    EWMA --> WA
-    IQR --> WA
-
-    WA -->|score ≥ 0.45| SC{Severity<br/>Classification}
-    SC -->|≥0.75 + Z>6σ| CRIT[🔴 Critical]
-    SC -->|≥0.55 + 2 methods| WARN[🟡 Warning]
-    SC -->|else| INFO[🔵 Info]
-```
+<img src=".docs/hybrid-ensemble.png" alt="Hybrid Ensemble Diagram"/>
 
 | Method | What it catches | How it works |
 |--------|----------------|--------------|
