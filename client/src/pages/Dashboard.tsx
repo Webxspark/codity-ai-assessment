@@ -30,6 +30,7 @@ import type { Anomaly, MetricDataPoint } from "../types";
 // ── Eagerly loaded (lightweight / always visible) ───────────────────
 import { ServiceOverview } from "../components/ServiceOverview";
 import { AnomalyList } from "../components/AnomalyList";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 
 // ── Lazily loaded (heavy / conditionally visible) ───────────────────
 const MetricChart = lazy(() =>
@@ -262,14 +263,16 @@ export function Dashboard() {
                     const chartAnomalies = getChartAnomalies(service, metric);
                     return (
                       <Card key={key} variant="secondary" className="p-3 sm:p-4">
-                        <Suspense fallback={<LazyFallback />}>
-                          <MetricChart
-                            data={data}
-                            anomalies={chartAnomalies}
-                            title={`${service} / ${metric}`}
-                            onAnomalyClick={handleAnomalySelect}
-                          />
-                        </Suspense>
+                        <ErrorBoundary>
+                          <Suspense fallback={<LazyFallback />}>
+                            <MetricChart
+                              data={data}
+                              anomalies={chartAnomalies}
+                              title={`${service} / ${metric}`}
+                              onAnomalyClick={handleAnomalySelect}
+                            />
+                          </Suspense>
+                        </ErrorBoundary>
                       </Card>
                     );
                   })}
@@ -311,12 +314,14 @@ export function Dashboard() {
                         </Button>
                       </div>
                       <Suspense fallback={<LazyFallback />}>
-                        <AnomalyDetail
-                          anomaly={selectedAnomaly}
-                          deployments={deployments}
-                          configChanges={configChanges}
-                          onOpenChat={handleOpenChat}
-                        />
+                        <ErrorBoundary>
+                          <AnomalyDetail
+                            anomaly={selectedAnomaly}
+                            deployments={deployments}
+                            configChanges={configChanges}
+                            onOpenChat={handleOpenChat}
+                          />
+                        </ErrorBoundary>
                       </Suspense>
                     </div>
                   ) : (
@@ -334,12 +339,14 @@ export function Dashboard() {
                   Deployment &amp; Config Timeline
                 </h2>
                 <Card variant="secondary" className="p-3 sm:p-4">
-                  <Suspense fallback={<LazyFallback />}>
-                    <DeploymentTimeline
-                      deployments={deployments}
-                      configChanges={configChanges}
-                    />
-                  </Suspense>
+                  <ErrorBoundary>
+                    <Suspense fallback={<LazyFallback />}>
+                      <DeploymentTimeline
+                        deployments={deployments}
+                        configChanges={configChanges}
+                      />
+                    </Suspense>
+                  </ErrorBoundary>
                 </Card>
               </div>
             </div>
@@ -347,13 +354,15 @@ export function Dashboard() {
             {/* Right panel — AI Chat (overlay on mobile, sidebar on desktop) */}
             {showChat && (
               <div className="fixed inset-0 z-40 bg-surface md:static md:inset-auto md:z-auto md:w-130 shrink-0 md:border-l border-border">
-                <Suspense fallback={<LazyFallback />}>
-                  <ChatPanel
-                    anomalyId={chatAnomalyId}
-                    anomalies={anomalies}
-                    onClose={() => setShowChat(false)}
-                  />
-                </Suspense>
+                <ErrorBoundary>
+                  <Suspense fallback={<LazyFallback />}>
+                    <ChatPanel
+                      anomalyId={chatAnomalyId}
+                      anomalies={anomalies}
+                      onClose={() => setShowChat(false)}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               </div>
             )}
           </div>

@@ -115,6 +115,7 @@ export function ChatPanel({ anomalyId, anomalies = [], onClose }: ChatPanelProps
           message: msg,
           anomaly_id: contextAnomalyIds[0],
           conversation_id: conversationId || undefined,
+          signal: controller.signal,
         });
 
         for await (const chunk of stream) {

@@ -128,16 +128,20 @@ export async function fetchConversation(conversationId: string): Promise<ChatCon
 /**
  * Send a chat message and receive SSE stream.
  * Returns an async generator of ChatStreamChunks.
+ * Pass an AbortSignal to cancel the HTTP request and stop streaming.
  */
 export async function* sendChatMessage(params: {
   message: string;
   anomaly_id?: string;
   conversation_id?: string;
+  signal?: AbortSignal;
 }): AsyncGenerator<ChatStreamChunk> {
+  const { signal, ...body } = params;
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify(body),
+    signal,
   });
 
   if (!response.ok) {
