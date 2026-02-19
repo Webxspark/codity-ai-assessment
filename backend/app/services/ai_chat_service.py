@@ -180,24 +180,23 @@ class AIChatService:
 
         # Recent deployments (last 10)
         dep_result = await self.db.execute(
-            select(DeploymentLog).order_by(DeploymentLog.deployed_at.desc()).limit(10)
+            select(DeploymentLog).order_by(DeploymentLog.timestamp.desc()).limit(10)
         )
         deps = dep_result.scalars().all()
         if deps:
             ctx["recent_deployments"] = [
                 {
                     "service_name": d.service_name,
-                    "version": d.version,
-                    "deployed_at": d.deployed_at.isoformat(),
+                    "deployed_at": d.timestamp.isoformat(),
                     "commit_sha": d.commit_sha,
-                    "description": (d.description or "")[:200],
+                    "commit_message": (d.commit_message or "")[:200],
                 }
                 for d in deps
             ]
 
         # Recent config changes (last 10)
         cfg_result = await self.db.execute(
-            select(ConfigChangeLog).order_by(ConfigChangeLog.changed_at.desc()).limit(10)
+            select(ConfigChangeLog).order_by(ConfigChangeLog.timestamp.desc()).limit(10)
         )
         cfgs = cfg_result.scalars().all()
         if cfgs:
@@ -207,7 +206,7 @@ class AIChatService:
                     "parameter": c.parameter,
                     "old_value": c.old_value,
                     "new_value": c.new_value,
-                    "changed_at": c.changed_at.isoformat(),
+                    "changed_at": c.timestamp.isoformat(),
                 }
                 for c in cfgs
             ]
