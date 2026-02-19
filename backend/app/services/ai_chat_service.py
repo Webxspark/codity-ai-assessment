@@ -321,61 +321,94 @@ class AIChatService:
         # Add current user message
         messages.append({"role": "user", "content": user_message})
 
-        # ── Tool-calling loop ────────────────────────────────────────
+        # ── Tool-calling loop (streaming throughout) ────────────────
         try:
-            for round_idx in range(MAX_TOOL_ROUNDS):
-                response = await self.client.chat.completions.create(
+            for _round in range(MAX_TOOL_ROUNDS):
+                stream = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     tools=TOOLS,
                     tool_choice="auto",
+                    stream=True,
                     temperature=0.3,
                     max_tokens=4096,
                 )
 
-                assistant_msg = response.choices[0].message
+                # Accumulate streamed response — content is yielded live,
+                # tool-call deltas are collected for execution.
+                content_parts: list[str] = []
+                tool_calls_acc: dict[int, dict] = {}  # index → {id, name, arguments}
 
-                if not assistant_msg.tool_calls:
-                    # No tool calls — this is the final answer
-                    if assistant_msg.content:
-                        yield assistant_msg.content
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta
+
+                    # Stream text tokens to the user immediately
+                    if delta.content:
+                        yield delta.content
+                        content_parts.append(delta.content)
+
+                    # Accumulate tool-call fragments
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tc_delta.id:
+                                tool_calls_acc[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tool_calls_acc[idx]["name"] += tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+
+                # If content was streamed and no tool calls → final answer, done.
+                if not tool_calls_acc:
                     return
 
-                # LLM wants to call tools — execute them
-                # Append the assistant message (with tool_calls) to history
-                messages.append(assistant_msg.model_dump())
+                # ── Execute tool calls ───────────────────────────────
+                # Append the assistant message (with tool_calls) to message history
+                assistant_tool_calls = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                    for tc in tool_calls_acc.values()
+                ]
+                messages.append({
+                    "role": "assistant",
+                    "content": "".join(content_parts) or None,
+                    "tool_calls": assistant_tool_calls,
+                })
 
-                # Yield status so the user sees progress
-                tool_names = [tc.function.name for tc in assistant_msg.tool_calls]
-                friendly = ", ".join(
-                    n.replace("_", " ") for n in tool_names
-                )
+                # Show progress indicator
+                tool_names = [tc["name"] for tc in tool_calls_acc.values()]
+                friendly = ", ".join(n.replace("_", " ") for n in tool_names)
                 yield f"🔍 *Fetching data: {friendly}...*\n\n"
 
-                for tc in assistant_msg.tool_calls:
-                    fn_name = tc.function.name
+                for tc in tool_calls_acc.values():
                     try:
-                        fn_args = json.loads(tc.function.arguments)
+                        fn_args = json.loads(tc["arguments"])
                     except json.JSONDecodeError:
                         fn_args = {}
-
-                    result = await self._execute_tool(fn_name, fn_args)
-
+                    result = await self._execute_tool(tc["name"], fn_args)
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": tc.id,
+                        "tool_call_id": tc["id"],
                         "content": json.dumps(result, default=str, separators=(",", ":")),
                     })
 
-            # If we exhausted MAX_TOOL_ROUNDS, make one final non-tool call
-            response = await self.client.chat.completions.create(
+            # Exhausted MAX_TOOL_ROUNDS — final streaming call (no tools)
+            stream = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
+                stream=True,
                 temperature=0.3,
                 max_tokens=4096,
             )
-            if response.choices[0].message.content:
-                yield response.choices[0].message.content
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
         except Exception as e:
             yield f"\n\n⚠️ Error communicating with the AI model: {str(e)}"
