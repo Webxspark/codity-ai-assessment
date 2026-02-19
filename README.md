@@ -4,7 +4,7 @@
 
 **Live Demo:** [codityai-assessment.alanchris.me](https://codityai-assessment.alanchris.me/)
 
-**Demo Recording:** _Coming soon_
+**Demo Recording:** [YouTube](https://youtu.be/NPR2kKzLW9M)
 
 ---
 
