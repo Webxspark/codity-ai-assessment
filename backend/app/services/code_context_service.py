@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import (
@@ -10,6 +10,7 @@ from app.models.db_models import (
     AnomalyCorrelation,
     DeploymentLog,
     ConfigChangeLog,
+    MetricDataPoint,
     ServiceRegistry,
 )
 
@@ -194,10 +195,27 @@ class CodeContextService:
         return result.scalar_one_or_none()
 
     async def get_full_context_for_anomaly(self, anomaly_id) -> dict:
-        """Get complete context for an anomaly — used by AI chat."""
+        """Get complete context for an anomaly — used by AI chat.
+
+        This performs *both* a lookup of pre-stored correlations and a
+        live query of nearby deployments / config changes.  The live
+        fallback is critical because correlations may not have been
+        computed yet (e.g., anomaly detected before a config change was
+        ingested) or may have been run with a narrower window.  By
+        always including live data, the LLM never misses obvious
+        context like a rate-limit change 19 minutes before a drop.
+
+        Token budget:  To remain well within even small model context
+        windows, metric trend data is downsampled to at most
+        MAX_TREND_POINTS points and correlation explanations are
+        truncated.
+        """
         from sqlalchemy.orm import selectinload
 
-        # Fetch anomaly with correlations
+        MAX_TREND_POINTS = 60     # ≈1 per minute for 1h
+        CONTEXT_WINDOW_MIN = 120  # live query window (2h)
+
+        # ── 1. Fetch the anomaly with stored correlations ────────────
         stmt = (
             select(Anomaly)
             .options(selectinload(Anomaly.correlations))
@@ -208,10 +226,10 @@ class CodeContextService:
         if not anomaly:
             return {}
 
-        # Get service info
+        # ── 2. Service info ──────────────────────────────────────────
         svc = await self._get_service_registry(anomaly.service_name)
 
-        # Get correlated deployments
+        # ── 3. Gather deployments (pre-stored + live fallback) ───────
         deploy_ids = [
             c.reference_id for c in anomaly.correlations
             if c.correlation_type == "deployment"
@@ -220,9 +238,35 @@ class CodeContextService:
         if deploy_ids:
             stmt = select(DeploymentLog).where(DeploymentLog.id.in_(deploy_ids))
             result = await self.db.execute(stmt)
-            deployments = result.scalars().all()
+            deployments = list(result.scalars().all())
 
-        # Get correlated config changes
+        # Live fallback: always query nearby deployments so we never
+        # miss a deploy that wasn't pre-correlated.
+        live_window_start = anomaly.detected_at - timedelta(minutes=CONTEXT_WINDOW_MIN)
+        live_window_end = anomaly.detected_at + timedelta(minutes=30)
+
+        service_names = [anomaly.service_name]
+        if svc and svc.dependencies:
+            service_names.extend(svc.dependencies)
+
+        live_deploy_stmt = select(DeploymentLog).where(
+            and_(
+                DeploymentLog.service_name.in_(service_names),
+                DeploymentLog.timestamp >= live_window_start,
+                DeploymentLog.timestamp <= live_window_end,
+            )
+        ).order_by(DeploymentLog.timestamp.desc()).limit(20)
+        result = await self.db.execute(live_deploy_stmt)
+        live_deploys = result.scalars().all()
+
+        # Merge, dedup by ID
+        existing_ids = {d.id for d in deployments}
+        for ld in live_deploys:
+            if ld.id not in existing_ids:
+                deployments.append(ld)
+                existing_ids.add(ld.id)
+
+        # ── 4. Gather config changes (pre-stored + live fallback) ────
         config_ids = [
             c.reference_id for c in anomaly.correlations
             if c.correlation_type == "config_change"
@@ -231,18 +275,110 @@ class CodeContextService:
         if config_ids:
             stmt = select(ConfigChangeLog).where(ConfigChangeLog.id.in_(config_ids))
             result = await self.db.execute(stmt)
-            config_changes = result.scalars().all()
+            config_changes = list(result.scalars().all())
 
-        # Get related anomalies
+        # Live fallback for config changes
+        live_cfg_stmt = select(ConfigChangeLog).where(
+            and_(
+                ConfigChangeLog.service_name == anomaly.service_name,
+                ConfigChangeLog.timestamp >= live_window_start,
+                ConfigChangeLog.timestamp <= live_window_end,
+            )
+        ).order_by(ConfigChangeLog.timestamp.desc()).limit(20)
+        result = await self.db.execute(live_cfg_stmt)
+        live_cfgs = result.scalars().all()
+
+        existing_cfg_ids = {c.id for c in config_changes}
+        for lc in live_cfgs:
+            if lc.id not in existing_cfg_ids:
+                config_changes.append(lc)
+                existing_cfg_ids.add(lc.id)
+
+        # ── 5. Related anomalies ─────────────────────────────────────
         related_ids = [
             c.reference_id for c in anomaly.correlations
             if c.correlation_type == "related_anomaly"
         ]
         related_anomalies = []
         if related_ids:
-            stmt = select(Anomaly).where(Anomaly.id.in_(related_ids))
+            stmt = select(Anomaly).where(Anomaly.id.in_(related_ids)).limit(15)
             result = await self.db.execute(stmt)
-            related_anomalies = result.scalars().all()
+            related_anomalies = list(result.scalars().all())
+
+        # Live fallback: cross-service anomalies within ±15 min
+        live_rel_stmt = select(Anomaly).where(
+            and_(
+                Anomaly.detected_at >= anomaly.detected_at - timedelta(minutes=15),
+                Anomaly.detected_at <= anomaly.detected_at + timedelta(minutes=15),
+                Anomaly.id != anomaly.id,
+            )
+        ).order_by(Anomaly.detected_at.asc()).limit(15)
+        result = await self.db.execute(live_rel_stmt)
+        live_rels = result.scalars().all()
+
+        existing_rel_ids = {r.id for r in related_anomalies}
+        for lr in live_rels:
+            if lr.id not in existing_rel_ids:
+                related_anomalies.append(lr)
+                existing_rel_ids.add(lr.id)
+
+        # ── 6. Metric trend (downsampled for token budget) ───────────
+        trend_window_start = anomaly.detected_at - timedelta(minutes=60)
+        trend_window_end = anomaly.detected_at + timedelta(minutes=15)
+        trend_stmt = (
+            select(MetricDataPoint)
+            .where(
+                and_(
+                    MetricDataPoint.service_name == anomaly.service_name,
+                    MetricDataPoint.metric_name == anomaly.metric_name,
+                    MetricDataPoint.timestamp >= trend_window_start,
+                    MetricDataPoint.timestamp <= trend_window_end,
+                )
+            )
+            .order_by(MetricDataPoint.timestamp.asc())
+            .limit(MAX_TREND_POINTS * 3)  # fetch more, then downsample
+        )
+        result = await self.db.execute(trend_stmt)
+        trend_points = result.scalars().all()
+
+        # Downsample if too many points
+        if len(trend_points) > MAX_TREND_POINTS:
+            step = max(1, len(trend_points) // MAX_TREND_POINTS)
+            trend_points = trend_points[::step][:MAX_TREND_POINTS]
+
+        metric_trend = [
+            {"t": p.timestamp.strftime("%H:%M"), "v": round(p.value, 2)}
+            for p in trend_points
+        ]
+
+        # ── 7. Build context dict ────────────────────────────────────
+        def _deploy_dict(d: DeploymentLog) -> dict:
+            time_diff = (anomaly.detected_at - d.timestamp).total_seconds()
+            direction = "before" if time_diff >= 0 else "after"
+            mins = abs(int(time_diff / 60))
+            return {
+                "timestamp": d.timestamp.isoformat(),
+                "relative": f"{mins} min {direction} anomaly",
+                "commit_sha": d.commit_sha,
+                "commit_message": d.commit_message,
+                "author": d.author,
+                "changed_files": d.changed_files,
+                "service_name": d.service_name,
+            }
+
+        def _config_dict(c: ConfigChangeLog) -> dict:
+            time_diff = (anomaly.detected_at - c.timestamp).total_seconds()
+            direction = "before" if time_diff >= 0 else "after"
+            mins = abs(int(time_diff / 60))
+            return {
+                "timestamp": c.timestamp.isoformat(),
+                "relative": f"{mins} min {direction} anomaly",
+                "parameter": c.parameter,
+                "old_value": c.old_value,
+                "new_value": c.new_value,
+                "changed_by": c.changed_by,
+                "service_name": c.service_name,
+            }
 
         return {
             "anomaly": {
@@ -258,7 +394,6 @@ class CodeContextService:
                 "baseline_std": anomaly.baseline_std,
                 "z_score": anomaly.z_score,
                 "explanation": anomaly.explanation,
-                "detection_details": anomaly.detection_details,
             },
             "service": {
                 "name": svc.service_name if svc else anomaly.service_name,
@@ -266,47 +401,35 @@ class CodeContextService:
                 "owner_team": svc.owner_team if svc else None,
                 "repository_url": svc.repository_url if svc else None,
                 "dependencies": svc.dependencies if svc else None,
-                "modules": svc.modules if svc else None,
             },
-            "deployments": [
-                {
-                    "timestamp": d.timestamp.isoformat(),
-                    "commit_sha": d.commit_sha,
-                    "commit_message": d.commit_message,
-                    "author": d.author,
-                    "changed_files": d.changed_files,
-                    "service_name": d.service_name,
-                }
-                for d in deployments
-            ],
-            "config_changes": [
-                {
-                    "timestamp": c.timestamp.isoformat(),
-                    "parameter": c.parameter,
-                    "old_value": c.old_value,
-                    "new_value": c.new_value,
-                    "changed_by": c.changed_by,
-                    "service_name": c.service_name,
-                }
-                for c in config_changes
-            ],
+            "nearby_deployments": sorted(
+                [_deploy_dict(d) for d in deployments],
+                key=lambda x: x["timestamp"],
+                reverse=True,
+            ),
+            "nearby_config_changes": sorted(
+                [_config_dict(c) for c in config_changes],
+                key=lambda x: x["timestamp"],
+                reverse=True,
+            ),
             "related_anomalies": [
                 {
+                    "service_name": a.service_name,
                     "metric_name": a.metric_name,
                     "detected_at": a.detected_at.isoformat(),
                     "severity": a.severity,
-                    "metric_value": a.metric_value,
+                    "metric_value": round(a.metric_value, 2),
                     "anomaly_type": a.anomaly_type,
-                    "explanation": a.explanation,
                 }
-                for a in related_anomalies
+                for a in related_anomalies[:10]
             ],
+            "metric_trend_around_anomaly": metric_trend,
             "correlations": [
                 {
                     "type": c.correlation_type,
                     "suspicion_score": c.suspicion_score,
-                    "explanation": c.explanation,
+                    "explanation": c.explanation[:300] if c.explanation else None,
                 }
-                for c in anomaly.correlations
+                for c in anomaly.correlations[:10]
             ],
         }
