@@ -1,22 +1,26 @@
-"""AI Chat service — builds context, calls LLM via OpenAI-compatible API, streams responses.
+"""AI Chat service — LLM with autonomous tool-calling for data retrieval.
+
+The LLM is given a set of tools (functions) that let it autonomously query
+the database for anomalies, metrics, deployments, and config changes.
+When the user asks "Why did p95 latency spike at 14:32?" the LLM will:
+  1. Call search_anomalies to find matching anomalies
+  2. Call get_anomaly_context to get full context (correlations, metric trend)
+  3. Synthesize an answer grounded in real data
 
 Production considerations:
-- Token budgeting: conversation history is trimmed to MAX_HISTORY_MSGS
-  (most recent) so the combined prompt stays within model limits.
-- Context formatting: JSON context is compact (no indent) and
-  heavy fields (detection_details) are excluded to save tokens.
-- Fallback context: when no anomaly_id is provided, recent anomalies
-  plus recent deployments/config changes are included.
+- Tool-calling loop capped at MAX_TOOL_ROUNDS to prevent infinite loops
+- Conversation history trimmed to MAX_HISTORY_MSGS
+- Tool results are compact JSON
 """
 
 import json
+from datetime import datetime, timedelta
 from uuid import UUID
 from typing import AsyncIterator
 
 from openai import AsyncOpenAI
-from sqlalchemy import select
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.models.db_models import (
@@ -25,30 +29,210 @@ from app.models.db_models import (
     Anomaly,
     DeploymentLog,
     ConfigChangeLog,
+    MetricDataPoint,
 )
 from app.services.code_context_service import CodeContextService
 
-# Maximum conversation history messages to include (user+assistant pairs).
-# With ~2 KB per turn, 30 turns ≈ 60 KB ≈ ~15K tokens — safe for 128K models.
 MAX_HISTORY_MSGS = 30
+MAX_TOOL_ROUNDS = 5  # max autonomous data-fetching rounds before forcing a reply
 
 SYSTEM_PROMPT = """You are CodityAI, a senior SRE and observability assistant. You help engineers understand metric anomalies, correlate them with code changes, deployments, and configuration changes, and suggest actionable fixes.
 
+You have access to tools that let you query the system's database. USE THEM PROACTIVELY:
+- When the user asks about a specific metric, time, or service — call search_anomalies or query_metric_data to find relevant data.
+- When you find an anomaly — call get_anomaly_context to get its full context (correlations with deployments, config changes, metric trends).
+- When the user asks about deployments or config changes — call the relevant tool.
+- When the user asks about system health — call get_metrics_summary.
+
 CRITICAL INSTRUCTIONS:
-1. **Always check the provided context carefully** — look at nearby_deployments, nearby_config_changes, related_anomalies, and metric_trend_around_anomaly sections.
-2. If config changes or deployments are present in the context, you MUST reference them in your analysis. Do NOT say "no changes found" if the context contains changes.
-3. Reference specific metrics, timestamps, and values from the provided context.
+1. NEVER say "I don't have data" without first trying to fetch it using your tools.
+2. If context is already provided, check it first — but still use tools if you need more detail.
+3. Reference specific metrics, timestamps, and values.
 4. Provide concrete, actionable technical suggestions (not generic advice).
 5. Explain your reasoning step-by-step.
 6. Use markdown formatting for clarity.
 
 When analyzing anomalies:
 - Explain WHY the metric is anomalous (statistical reasoning from z_score, baseline_mean, baseline_std)
-- Explain WHAT likely caused it — correlate with nearby deployments, config changes, or related anomalies listed in the context
+- Explain WHAT likely caused it — correlate with nearby deployments, config changes, or related anomalies
 - Suggest HOW to fix or mitigate it (actionable steps)
 - Rate your confidence in the root cause assessment
 
-Always ground your answers in the data provided. If you don't have enough context, say so explicitly rather than guessing."""
+Always ground your answers in the data provided. If after using tools you still don't have enough context, say so explicitly rather than guessing."""
+
+# ── Tool definitions (OpenAI function-calling format) ────────────────
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_anomalies",
+            "description": (
+                "Search for detected anomalies. Use this when the user asks about "
+                "a specific metric, service, time range, or anomaly event. "
+                "Returns a list of matching anomalies with their details."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_name": {
+                        "type": "string",
+                        "description": "Filter by service name (e.g. 'api-gateway', 'payment-service')",
+                    },
+                    "metric_name": {
+                        "type": "string",
+                        "description": "Filter by metric name (e.g. 'latency_p95', 'error_rate', 'cpu_percent')",
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": ["critical", "warning", "info"],
+                        "description": "Filter by severity level",
+                    },
+                    "hours_back": {
+                        "type": "number",
+                        "description": "How many hours back to search (default: 24)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default: 10)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_anomaly_context",
+            "description": (
+                "Get FULL context for a specific anomaly by its ID. Returns correlated "
+                "deployments, config changes, related anomalies across services, "
+                "and the metric trend around the anomaly. Use this after finding an "
+                "anomaly via search_anomalies to get deep analysis data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "anomaly_id": {
+                        "type": "string",
+                        "description": "The UUID of the anomaly to get context for",
+                    },
+                },
+                "required": ["anomaly_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_recent_deployments",
+            "description": (
+                "Get recent deployments (code releases). Returns commit SHA, message, "
+                "author, changed files, and timestamp."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_name": {
+                        "type": "string",
+                        "description": "Filter by service name",
+                    },
+                    "hours_back": {
+                        "type": "number",
+                        "description": "How many hours back to search (default: 48)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default: 10)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_recent_config_changes",
+            "description": (
+                "Get recent configuration parameter changes. Shows parameter name, "
+                "old value, new value, who changed it, and when."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_name": {
+                        "type": "string",
+                        "description": "Filter by service name",
+                    },
+                    "hours_back": {
+                        "type": "number",
+                        "description": "How many hours back to search (default: 48)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default: 10)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_metrics_summary",
+            "description": (
+                "Get a high-level summary of all services and their metrics: "
+                "count, min, max, avg values, and latest timestamp. "
+                "Use this for system health overviews."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_name": {
+                        "type": "string",
+                        "description": "Filter by service name (optional)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_metric_data",
+            "description": (
+                "Query raw metric time-series data points. Use when you need to "
+                "see actual metric values at specific times. Returns timestamp+value pairs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_name": {
+                        "type": "string",
+                        "description": "Service name (required)",
+                    },
+                    "metric_name": {
+                        "type": "string",
+                        "description": "Metric name (required)",
+                    },
+                    "hours_back": {
+                        "type": "number",
+                        "description": "How many hours back (default: 2)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max data points (default: 60)",
+                    },
+                },
+                "required": ["service_name", "metric_name"],
+            },
+        },
+    },
+]
 
 
 class AIChatService:
@@ -107,21 +291,29 @@ class AIChatService:
         user_message: str,
         anomaly_id: UUID | None = None,
     ) -> AsyncIterator[str]:
-        """Generate a streaming AI response with full context."""
+        """Generate an AI response with autonomous tool-calling.
+
+        Flow:
+        1. Build messages (system prompt + optional pre-attached context + history)
+        2. Call LLM with tools — if it returns tool_calls, execute them and loop
+        3. When the LLM produces a final text response, yield it
+        """
 
         # Build messages list
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        # Add anomaly context — compact JSON (no indent) to save tokens
-        context = await self._build_context(anomaly_id, user_message)
-        if context:
-            compact = json.dumps(context, default=str, separators=(",", ":"))
-            messages.append({
-                "role": "system",
-                "content": f"ANOMALY & SYSTEM CONTEXT (reference this data in your answer):\n{compact}",
-            })
+        # If an anomaly_id is explicitly attached, inject its context directly
+        # so the LLM has it immediately (avoids one tool-call round-trip)
+        if anomaly_id:
+            context = await self.ctx_service.get_full_context_for_anomaly(anomaly_id)
+            if context:
+                compact = json.dumps(context, default=str, separators=(",", ":"))
+                messages.append({
+                    "role": "system",
+                    "content": f"PRE-ATTACHED ANOMALY CONTEXT:\n{compact}",
+                })
 
-        # Add conversation history (trimmed to MAX_HISTORY_MSGS most-recent)
+        # Add conversation history (trimmed)
         history = await self._get_conversation_history(conversation_id)
         for msg in history:
             messages.append({"role": msg.role, "content": msg.content})
@@ -129,89 +321,261 @@ class AIChatService:
         # Add current user message
         messages.append({"role": "user", "content": user_message})
 
-        # Stream from LLM
+        # ── Tool-calling loop ────────────────────────────────────────
         try:
-            stream = await self.client.chat.completions.create(
+            for round_idx in range(MAX_TOOL_ROUNDS):
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    temperature=0.3,
+                    max_tokens=4096,
+                )
+
+                assistant_msg = response.choices[0].message
+
+                if not assistant_msg.tool_calls:
+                    # No tool calls — this is the final answer
+                    if assistant_msg.content:
+                        yield assistant_msg.content
+                    return
+
+                # LLM wants to call tools — execute them
+                # Append the assistant message (with tool_calls) to history
+                messages.append(assistant_msg.model_dump())
+
+                # Yield status so the user sees progress
+                tool_names = [tc.function.name for tc in assistant_msg.tool_calls]
+                friendly = ", ".join(
+                    n.replace("_", " ") for n in tool_names
+                )
+                yield f"🔍 *Fetching data: {friendly}...*\n\n"
+
+                for tc in assistant_msg.tool_calls:
+                    fn_name = tc.function.name
+                    try:
+                        fn_args = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        fn_args = {}
+
+                    result = await self._execute_tool(fn_name, fn_args)
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result, default=str, separators=(",", ":")),
+                    })
+
+            # If we exhausted MAX_TOOL_ROUNDS, make one final non-tool call
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                stream=True,
                 temperature=0.3,
                 max_tokens=4096,
             )
+            if response.choices[0].message.content:
+                yield response.choices[0].message.content
 
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
         except Exception as e:
             yield f"\n\n⚠️ Error communicating with the AI model: {str(e)}"
 
-    async def _build_context(self, anomaly_id: UUID | None, user_message: str) -> dict | None:
-        """Build contextual information for the LLM.
+    # ── Tool execution ───────────────────────────────────────────────
 
-        When an anomaly_id is given, returns full context from CodeContextService.
-        Otherwise, returns recent anomalies *plus* recent deployments and config
-        changes so the LLM can still reason about what happened.
-        """
-        if anomaly_id:
-            return await self.ctx_service.get_full_context_for_anomaly(anomaly_id)
+    async def _execute_tool(self, name: str, args: dict) -> dict | list:
+        """Execute a tool function and return the result."""
+        handlers = {
+            "search_anomalies": self._tool_search_anomalies,
+            "get_anomaly_context": self._tool_get_anomaly_context,
+            "get_recent_deployments": self._tool_get_deployments,
+            "get_recent_config_changes": self._tool_get_config_changes,
+            "get_metrics_summary": self._tool_get_metrics_summary,
+            "query_metric_data": self._tool_query_metric_data,
+        }
+        handler = handlers.get(name)
+        if not handler:
+            return {"error": f"Unknown tool: {name}"}
+        try:
+            return await handler(**args)
+        except Exception as e:
+            return {"error": str(e)}
 
-        # ---- Fallback: no specific anomaly ----
-        ctx: dict = {}
+    async def _tool_search_anomalies(
+        self,
+        service_name: str | None = None,
+        metric_name: str | None = None,
+        severity: str | None = None,
+        hours_back: float = 24,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Search for anomalies matching criteria."""
+        stmt = select(Anomaly)
+        conditions = []
+        if service_name:
+            conditions.append(Anomaly.service_name == service_name)
+        if metric_name:
+            conditions.append(Anomaly.metric_name == metric_name)
+        if severity:
+            conditions.append(Anomaly.severity == severity)
+        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        conditions.append(Anomaly.detected_at >= cutoff)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(Anomaly.detected_at.desc()).limit(min(limit, 20))
 
-        # Recent anomalies
-        result = await self.db.execute(
-            select(Anomaly).order_by(Anomaly.detected_at.desc()).limit(5)
+        result = await self.db.execute(stmt)
+        anomalies = result.scalars().all()
+        return [
+            {
+                "id": str(a.id),
+                "service_name": a.service_name,
+                "metric_name": a.metric_name,
+                "detected_at": a.detected_at.isoformat(),
+                "severity": a.severity,
+                "confidence_score": a.confidence_score,
+                "anomaly_type": a.anomaly_type,
+                "metric_value": round(a.metric_value, 4),
+                "baseline_mean": round(a.baseline_mean, 4) if a.baseline_mean else None,
+                "z_score": round(a.z_score, 2) if a.z_score else None,
+                "explanation": (a.explanation or "")[:300],
+            }
+            for a in anomalies
+        ]
+
+    async def _tool_get_anomaly_context(self, anomaly_id: str) -> dict:
+        """Get full context for one anomaly (correlations, trends)."""
+        try:
+            uid = UUID(anomaly_id)
+        except ValueError:
+            return {"error": f"Invalid anomaly ID: {anomaly_id}"}
+        ctx = await self.ctx_service.get_full_context_for_anomaly(uid)
+        return ctx or {"error": "Anomaly not found"}
+
+    async def _tool_get_deployments(
+        self,
+        service_name: str | None = None,
+        hours_back: float = 48,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Get recent deployments."""
+        stmt = select(DeploymentLog)
+        conditions = []
+        if service_name:
+            conditions.append(DeploymentLog.service_name == service_name)
+        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        conditions.append(DeploymentLog.timestamp >= cutoff)
+        stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(DeploymentLog.timestamp.desc()).limit(min(limit, 20))
+
+        result = await self.db.execute(stmt)
+        deps = result.scalars().all()
+        return [
+            {
+                "id": str(d.id),
+                "service_name": d.service_name,
+                "deployed_at": d.timestamp.isoformat(),
+                "commit_sha": d.commit_sha,
+                "commit_message": (d.commit_message or "")[:200],
+                "author": d.author,
+                "changed_files": d.changed_files or [],
+            }
+            for d in deps
+        ]
+
+    async def _tool_get_config_changes(
+        self,
+        service_name: str | None = None,
+        hours_back: float = 48,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Get recent config changes."""
+        stmt = select(ConfigChangeLog)
+        conditions = []
+        if service_name:
+            conditions.append(ConfigChangeLog.service_name == service_name)
+        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        conditions.append(ConfigChangeLog.timestamp >= cutoff)
+        stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(ConfigChangeLog.timestamp.desc()).limit(min(limit, 20))
+
+        result = await self.db.execute(stmt)
+        cfgs = result.scalars().all()
+        return [
+            {
+                "id": str(c.id),
+                "service_name": c.service_name,
+                "parameter": c.parameter,
+                "old_value": c.old_value,
+                "new_value": c.new_value,
+                "changed_by": c.changed_by,
+                "changed_at": c.timestamp.isoformat(),
+            }
+            for c in cfgs
+        ]
+
+    async def _tool_get_metrics_summary(
+        self,
+        service_name: str | None = None,
+    ) -> list[dict]:
+        """Get aggregated metrics summary."""
+        stmt = select(
+            MetricDataPoint.service_name,
+            MetricDataPoint.metric_name,
+            func.count(MetricDataPoint.id).label("count"),
+            func.min(MetricDataPoint.value).label("min_value"),
+            func.max(MetricDataPoint.value).label("max_value"),
+            func.avg(MetricDataPoint.value).label("avg_value"),
+            func.max(MetricDataPoint.timestamp).label("latest_timestamp"),
+        ).group_by(MetricDataPoint.service_name, MetricDataPoint.metric_name)
+
+        if service_name:
+            stmt = stmt.where(MetricDataPoint.service_name == service_name)
+        stmt = stmt.limit(50)
+
+        result = await self.db.execute(stmt)
+        return [
+            {
+                "service_name": r.service_name,
+                "metric_name": r.metric_name,
+                "count": r.count,
+                "min": round(float(r.min_value), 4),
+                "max": round(float(r.max_value), 4),
+                "avg": round(float(r.avg_value), 4),
+                "latest_at": r.latest_timestamp.isoformat() if r.latest_timestamp else None,
+            }
+            for r in result.all()
+        ]
+
+    async def _tool_query_metric_data(
+        self,
+        service_name: str,
+        metric_name: str,
+        hours_back: float = 2,
+        limit: int = 60,
+    ) -> list[dict]:
+        """Query raw metric data points."""
+        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        stmt = (
+            select(MetricDataPoint)
+            .where(
+                and_(
+                    MetricDataPoint.service_name == service_name,
+                    MetricDataPoint.metric_name == metric_name,
+                    MetricDataPoint.timestamp >= cutoff,
+                )
+            )
+            .order_by(MetricDataPoint.timestamp.asc())
+            .limit(min(limit, 200))
         )
-        recent = result.scalars().all()
-        if recent:
-            ctx["recent_anomalies"] = [
-                {
-                    "id": str(a.id),
-                    "service_name": a.service_name,
-                    "metric_name": a.metric_name,
-                    "detected_at": a.detected_at.isoformat(),
-                    "severity": a.severity,
-                    "metric_value": a.metric_value,
-                    "anomaly_type": a.anomaly_type,
-                    "explanation": (a.explanation or "")[:300],
-                }
-                for a in recent
-            ]
-
-        # Recent deployments (last 10)
-        dep_result = await self.db.execute(
-            select(DeploymentLog).order_by(DeploymentLog.timestamp.desc()).limit(10)
-        )
-        deps = dep_result.scalars().all()
-        if deps:
-            ctx["recent_deployments"] = [
-                {
-                    "service_name": d.service_name,
-                    "deployed_at": d.timestamp.isoformat(),
-                    "commit_sha": d.commit_sha,
-                    "commit_message": (d.commit_message or "")[:200],
-                }
-                for d in deps
-            ]
-
-        # Recent config changes (last 10)
-        cfg_result = await self.db.execute(
-            select(ConfigChangeLog).order_by(ConfigChangeLog.timestamp.desc()).limit(10)
-        )
-        cfgs = cfg_result.scalars().all()
-        if cfgs:
-            ctx["recent_config_changes"] = [
-                {
-                    "service_name": c.service_name,
-                    "parameter": c.parameter,
-                    "old_value": c.old_value,
-                    "new_value": c.new_value,
-                    "changed_at": c.timestamp.isoformat(),
-                }
-                for c in cfgs
-            ]
-
-        return ctx or None
+        result = await self.db.execute(stmt)
+        points = result.scalars().all()
+        return [
+            {
+                "timestamp": p.timestamp.isoformat(),
+                "value": round(p.value, 4),
+            }
+            for p in points
+        ]
 
     async def _get_conversation_history(self, conversation_id: UUID) -> list[ChatMessage]:
         """Return conversation history trimmed to MAX_HISTORY_MSGS most-recent.
