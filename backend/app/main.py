@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
-from app.database import init_db
+from app.database import engine, init_db
 from app.routers import metrics, anomalies, code_context, chat, seed
 
 # ── Static file paths ────────────────────────────────────────────────
@@ -24,6 +24,8 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     await init_db()
     yield
+    # Cleanly return all pooled connections to the server on shutdown.
+    await engine.dispose()
 
 
 app = FastAPI(

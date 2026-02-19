@@ -23,11 +23,15 @@ AsyncSessionLocal = async_sessionmaker(
 
 
 async def get_db() -> AsyncSession:  # type: ignore[misc]
+    # `async with AsyncSessionLocal()` handles session.close() on __aexit__.
+    # We only need to handle the explicit rollback on error — the routers own
+    # their commits so we never auto-commit here.
     async with AsyncSessionLocal() as session:
         try:
             yield session
-        finally:
-            await session.close()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def init_db():

@@ -73,6 +73,9 @@ async def send_message(
             })
             yield f"data: {done_data}\n\n"
         except Exception as e:
+            # Roll back any partial writes (e.g. a half-saved assistant
+            # message) before yielding the error event to the client.
+            await db.rollback()
             error_data = json.dumps({
                 "type": "error",
                 "content": str(e),
