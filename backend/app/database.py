@@ -9,10 +9,12 @@ class Base(DeclarativeBase):
 
 engine = create_async_engine(
     get_settings().DATABASE_URL,
+    # Only emit SQL to logs in development — echoing millions of rows kills perf
     echo=get_settings().APP_ENV == "development",
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=20,
+    max_overflow=30,
+    pool_recycle=1800,  # recycle connections every 30 min to avoid stale handles
 )
 
 AsyncSessionLocal = async_sessionmaker(

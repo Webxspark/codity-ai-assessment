@@ -457,6 +457,11 @@ class AnomalyDetectorService:
         result = await self.db.execute(stmt)
         return [(r[0], r[1]) for r in result.all()]
 
+    # Maximum number of data points loaded into memory per metric for detection.
+    # With millions of records per metric, loading all is infeasible.
+    # 50 000 points at 1-min intervals ≈ ~35 days — plenty for anomaly detection.
+    MAX_FETCH_POINTS = 50_000
+
     async def _fetch_metric_data(
         self,
         service_name: str,
@@ -464,7 +469,10 @@ class AnomalyDetectorService:
         from_ts: datetime | None = None,
         to_ts: datetime | None = None,
     ) -> list[MetricDataPoint]:
-        """Fetch sorted metric data for a service/metric combo."""
+        """Fetch sorted metric data for a service/metric combo.
+
+        Caps at MAX_FETCH_POINTS most-recent rows to prevent OOM on large datasets.
+        """
         stmt = select(MetricDataPoint).where(
             and_(
                 MetricDataPoint.service_name == service_name,
@@ -475,7 +483,7 @@ class AnomalyDetectorService:
             stmt = stmt.where(MetricDataPoint.timestamp >= from_ts)
         if to_ts:
             stmt = stmt.where(MetricDataPoint.timestamp <= to_ts)
-        stmt = stmt.order_by(MetricDataPoint.timestamp.asc())
+        stmt = stmt.order_by(MetricDataPoint.timestamp.asc()).limit(self.MAX_FETCH_POINTS)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 

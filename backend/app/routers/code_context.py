@@ -97,8 +97,10 @@ async def deployment_comparison(
     """Compare metric behaviour before vs after a deployment.
 
     Returns all metrics for the deployment's service in the window
-    before and after the deployment timestamp.
+    before and after the deployment timestamp.  Data points are capped
+    at MAX_COMPARISON_POINTS per window per metric to handle large datasets.
     """
+    MAX_COMPARISON_POINTS = 500  # per window per metric
     # Look up the deployment
     result = await db.execute(
         select(DeploymentLog).where(DeploymentLog.id == deployment_id)
@@ -123,7 +125,7 @@ async def deployment_comparison(
     metrics: list[DeploymentComparisonMetric] = []
 
     for metric_name in metric_names:
-        # Before window
+        # Before window (capped)
         before_result = await db.execute(
             select(MetricDataPoint)
             .where(
@@ -135,10 +137,11 @@ async def deployment_comparison(
                 )
             )
             .order_by(MetricDataPoint.timestamp.asc())
+            .limit(MAX_COMPARISON_POINTS)
         )
         before_points = before_result.scalars().all()
 
-        # After window
+        # After window (capped)
         after_result = await db.execute(
             select(MetricDataPoint)
             .where(
@@ -150,6 +153,7 @@ async def deployment_comparison(
                 )
             )
             .order_by(MetricDataPoint.timestamp.asc())
+            .limit(MAX_COMPARISON_POINTS)
         )
         after_points = after_result.scalars().all()
 

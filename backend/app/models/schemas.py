@@ -16,7 +16,9 @@ class MetricDataPointIn(BaseModel):
 
 
 class MetricsBulkIngestRequest(BaseModel):
-    data_points: list[MetricDataPointIn]
+    data_points: list[MetricDataPointIn] = Field(
+        ..., max_length=10_000, description="Max 10 000 data points per request"
+    )
 
 
 class MetricDataPointOut(BaseModel):

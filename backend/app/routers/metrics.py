@@ -94,6 +94,7 @@ async def metrics_summary(
     service_name: str | None = Query(None),
     from_ts: datetime | None = Query(None),
     to_ts: datetime | None = Query(None),
+    limit: int = Query(100, le=500, description="Max service/metric combinations"),
     db: AsyncSession = Depends(get_db),
 ):
     """Get aggregated summary of metrics."""
@@ -116,6 +117,8 @@ async def metrics_summary(
         conditions.append(MetricDataPoint.timestamp <= to_ts)
     if conditions:
         stmt = stmt.where(and_(*conditions))
+
+    stmt = stmt.limit(limit)
 
     result = await db.execute(stmt)
     rows = result.all()
