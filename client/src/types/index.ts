@@ -155,3 +155,46 @@ export interface SeedStatus {
     chat_messages: number;
   };
 }
+
+// ── Workspace Config ────────────────────────────────────────────────
+
+export interface PrometheusQueryConfig {
+  query: string;
+  service_name: string;
+  metric_name: string;
+}
+
+export interface WorkspaceConfig {
+  id: string;
+  name: string;
+  description: string | null;
+  github_repo: string | null;
+  github_default_branch: string | null;
+  prometheus_endpoint: string | null;
+  prometheus_poll_interval_seconds: number;
+  prometheus_queries: PrometheusQueryConfig[] | null;
+  is_polling: string;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface WorkspaceConfigInput {
+  name?: string;
+  description?: string;
+  github_repo?: string;
+  github_token?: string;
+  github_default_branch?: string;
+  prometheus_endpoint?: string;
+  prometheus_poll_interval_seconds?: number;
+  prometheus_queries?: PrometheusQueryConfig[];
+}
+
+export interface ConnectionTestResult {
+  status: string;
+  details: Record<string, unknown>;
+}
+
+export interface GitHubSyncResult {
+  synced: number;
+  commits: Record<string, unknown>[];
+}

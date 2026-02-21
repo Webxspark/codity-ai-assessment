@@ -38,9 +38,12 @@ MAX_TOOL_ROUNDS = 5  # max autonomous data-fetching rounds before forcing a repl
 
 SYSTEM_PROMPT = """You are CodityAI, a senior SRE and observability assistant. You help engineers understand metric anomalies, correlate them with code changes, deployments, and configuration changes, and suggest actionable fixes.
 
-You have access to tools that let you query the system's database. USE THEM PROACTIVELY:
+You have access to tools that let you query the system's database AND the connected GitHub repository. USE THEM PROACTIVELY:
 - When the user asks about a specific metric, time, or service — call search_anomalies or query_metric_data to find relevant data.
 - When you find an anomaly — call get_anomaly_context to get its full context (correlations with deployments, config changes, metric trends).
+- When you see a suspicious deployment — call get_code_diff to read the actual code changes and identify potential root causes.
+- When you need to understand how a piece of code works — call get_file_content to read the source file.
+- When looking for code related to a specific feature or bug — call search_code to find relevant files.
 - When the user asks about deployments or config changes — call the relevant tool.
 - When the user asks about system health — call get_metrics_summary.
 
@@ -54,8 +57,9 @@ CRITICAL INSTRUCTIONS:
 
 When analyzing anomalies:
 - Explain WHY the metric is anomalous (statistical reasoning from z_score, baseline_mean, baseline_std)
-- Explain WHAT likely caused it — correlate with nearby deployments, config changes, or related anomalies
-- Suggest HOW to fix or mitigate it (actionable steps)
+- Explain WHAT likely caused it — look at deployment diffs, correlate with nearby deployments, config changes, or related anomalies
+- If a deployment is correlated, USE get_code_diff to read the actual code changes and pinpoint the exact lines that may have caused the issue
+- Suggest HOW to fix or mitigate it (actionable steps, referencing specific code if available)
 - Rate your confidence in the root cause assessment
 
 Always ground your answers in the data provided. If after using tools you still don't have enough context, say so explicitly rather than guessing."""
@@ -229,6 +233,78 @@ TOOLS = [
                     },
                 },
                 "required": ["service_name", "metric_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_code_diff",
+            "description": (
+                "Get the actual code diff (patch) for a specific deployment/commit. "
+                "Returns the file-level changes showing exactly what lines were added, "
+                "modified, or deleted. Use this when a deployment is correlated with "
+                "an anomaly to find the root cause in the code."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "commit_sha": {
+                        "type": "string",
+                        "description": "The commit SHA to get the diff for",
+                    },
+                },
+                "required": ["commit_sha"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_file_content",
+            "description": (
+                "Read the content of a specific file from the connected GitHub repository. "
+                "Use this to understand how code works, check implementations, or "
+                "investigate files that were changed in a suspicious deployment."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path in the repo (e.g. 'src/main.py', 'config/settings.yaml')",
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Branch or commit SHA to read from (optional, defaults to default branch)",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_code",
+            "description": (
+                "Search for code in the connected GitHub repository. "
+                "Use this to find files related to a specific feature, function, "
+                "class, or error pattern."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Code search query (e.g. 'database connection pool', 'def handle_request', 'timeout')",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default: 10)",
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
@@ -424,6 +500,9 @@ class AIChatService:
             "get_recent_config_changes": self._tool_get_config_changes,
             "get_metrics_summary": self._tool_get_metrics_summary,
             "query_metric_data": self._tool_query_metric_data,
+            "get_code_diff": self._tool_get_code_diff,
+            "get_file_content": self._tool_get_file_content,
+            "search_code": self._tool_search_code,
         }
         handler = handlers.get(name)
         if not handler:
@@ -623,3 +702,79 @@ class AIChatService:
         )
         # Reverse so chronological order is preserved
         return list(reversed(result.scalars().all()))
+
+    # ── GitHub-backed code tools ─────────────────────────────────────
+
+    async def _get_github_service(self) -> "GitHubService | None":
+        """Obtain a GitHubService from the workspace config, or None."""
+        from app.models.db_models import WorkspaceConfig
+        from app.services.github_service import GitHubService
+
+        result = await self.db.execute(select(WorkspaceConfig).limit(1))
+        config = result.scalar_one_or_none()
+        if not config or not config.github_repo:
+            return None
+        return GitHubService(repo=config.github_repo, token=config.github_token)
+
+    async def _tool_get_code_diff(self, commit_sha: str) -> dict:
+        """Get code diff for a commit — first checks the DB, then fetches from GitHub."""
+        # Check if we already have the diff stored locally
+        result = await self.db.execute(
+            select(DeploymentLog).where(DeploymentLog.commit_sha == commit_sha)
+        )
+        deploy = result.scalar_one_or_none()
+        if deploy and deploy.commit_diff:
+            return {
+                "sha": deploy.commit_sha,
+                "message": deploy.commit_message,
+                "author": deploy.author,
+                "changed_files": deploy.changed_files or [],
+                "diff": deploy.commit_diff[:20_000],
+            }
+
+        # Fetch from GitHub
+        svc = await self._get_github_service()
+        if not svc:
+            return {"error": "GitHub not configured — cannot fetch code diff"}
+        try:
+            detail = await svc.get_commit_detail(commit_sha)
+            diff_text = "\n".join(
+                f"--- {f['filename']} ---\n{f['patch']}"
+                for f in detail.get("files", [])
+                if f.get("patch")
+            )[:20_000]
+            return {
+                "sha": detail["sha"],
+                "message": detail["message"],
+                "author": detail["author"],
+                "changed_files": [f["filename"] for f in detail.get("files", [])],
+                "diff": diff_text,
+            }
+        except Exception as e:
+            return {"error": f"Failed to fetch diff: {e}"}
+        finally:
+            await svc.close()
+
+    async def _tool_get_file_content(self, path: str, ref: str | None = None) -> dict:
+        """Read a file from the connected GitHub repo."""
+        svc = await self._get_github_service()
+        if not svc:
+            return {"error": "GitHub not configured — cannot read files"}
+        try:
+            return await svc.get_file_content(path, ref=ref)
+        except Exception as e:
+            return {"error": f"Failed to read file: {e}"}
+        finally:
+            await svc.close()
+
+    async def _tool_search_code(self, query: str, limit: int = 10) -> list[dict]:
+        """Search for code in the connected GitHub repo."""
+        svc = await self._get_github_service()
+        if not svc:
+            return [{"error": "GitHub not configured — cannot search code"}]
+        try:
+            return await svc.search_code(query, limit=limit)
+        except Exception as e:
+            return [{"error": f"Code search failed: {e}"}]
+        finally:
+            await svc.close()

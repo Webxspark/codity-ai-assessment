@@ -92,6 +92,7 @@ class DeploymentLog(Base):
     commit_message = Column(Text, nullable=True)
     author = Column(String(255), nullable=True)
     changed_files = Column(JSON, nullable=True)  # list of file paths
+    commit_diff = Column(Text, nullable=True)  # actual code diff (patch)
     pr_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -154,3 +155,33 @@ class ChatMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("ChatConversation", back_populates="messages")
+
+
+class WorkspaceConfig(Base):
+    """Runtime workspace configuration — GitHub repo, Prometheus endpoint, etc.
+
+    Single-row table: only one workspace config at a time.
+    Use upsert pattern to update.
+    """
+
+    __tablename__ = "workspace_config"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, default="default")
+    description = Column(Text, nullable=True)
+
+    # GitHub
+    github_repo = Column(String(500), nullable=True)  # "owner/repo"
+    github_token = Column(Text, nullable=True)  # PAT or OAuth token
+    github_default_branch = Column(String(100), nullable=True, default="main")
+
+    # Prometheus
+    prometheus_endpoint = Column(String(500), nullable=True)  # e.g. "http://prometheus:9090"
+    prometheus_poll_interval_seconds = Column(Integer, nullable=False, default=60)
+    prometheus_queries = Column(JSON, nullable=True)  # list of {query, service_name, metric_name}
+
+    # Polling state
+    is_polling = Column(String(10), nullable=False, default="false")  # "true" / "false"
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

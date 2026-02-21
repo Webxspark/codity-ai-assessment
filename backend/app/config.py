@@ -11,6 +11,14 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = "sk-placeholder"
     OPENAI_MODEL: str = "gpt-4o-mini"
 
+    # GitHub integration
+    GITHUB_TOKEN: str = ""
+    GITHUB_REPO: str = ""  # format: "owner/repo"
+
+    # Prometheus integration
+    PROMETHEUS_ENDPOINT: str = ""  # e.g. "http://prometheus:9090"
+    PROMETHEUS_POLL_INTERVAL_SECONDS: int = 60
+
     # App
     APP_ENV: str = "development"
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"

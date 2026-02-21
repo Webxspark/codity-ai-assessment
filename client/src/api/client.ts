@@ -15,6 +15,10 @@ import type {
   ChatStreamChunk,
   DeploymentComparison,
   SeedStatus,
+  WorkspaceConfig,
+  WorkspaceConfigInput,
+  ConnectionTestResult,
+  GitHubSyncResult,
 } from "../types";
 
 const api = axios.create({
@@ -184,5 +188,69 @@ export async function fetchSeedStatus(): Promise<SeedStatus> {
 
 export async function generateSeedData(): Promise<SeedStatus> {
   const { data } = await api.post<SeedStatus>("/seed/generate");
+  return data;
+}
+
+// ── Workspace Config ────────────────────────────────────────────────
+
+export async function fetchWorkspaceConfig(): Promise<WorkspaceConfig | null> {
+  const { data } = await api.get<WorkspaceConfig | null>("/workspace/config");
+  return data;
+}
+
+export async function saveWorkspaceConfig(config: WorkspaceConfigInput): Promise<WorkspaceConfig> {
+  const { data } = await api.put<WorkspaceConfig>("/workspace/config", config);
+  return data;
+}
+
+export async function deleteWorkspaceConfig(): Promise<void> {
+  await api.delete("/workspace/config");
+}
+
+export async function testGitHubConnection(): Promise<ConnectionTestResult> {
+  const { data } = await api.post<ConnectionTestResult>("/workspace/github/test");
+  return data;
+}
+
+export async function syncGitHubCommits(params?: {
+  hours_back?: number;
+  limit?: number;
+}): Promise<GitHubSyncResult> {
+  const { data } = await api.post<GitHubSyncResult>("/workspace/github/sync", null, { params });
+  return data;
+}
+
+export async function testPrometheusConnection(): Promise<ConnectionTestResult> {
+  const { data } = await api.post<ConnectionTestResult>("/workspace/prometheus/test");
+  return data;
+}
+
+export async function discoverPrometheusMetrics(): Promise<{ metric_name: string }[]> {
+  const { data } = await api.get<{ metric_name: string }[]>("/workspace/prometheus/metrics");
+  return data;
+}
+
+export async function pollPrometheusOnce(): Promise<{ ingested: number }> {
+  const { data } = await api.post<{ ingested: number }>("/workspace/prometheus/poll-once");
+  return data;
+}
+
+export async function startPrometheusPolling(): Promise<{ status: string; interval: number }> {
+  const { data } = await api.post<{ status: string; interval: number }>("/workspace/prometheus/start-polling");
+  return data;
+}
+
+export async function stopPrometheusPolling(): Promise<{ status: string }> {
+  const { data } = await api.post<{ status: string }>("/workspace/prometheus/stop-polling");
+  return data;
+}
+
+export async function dropAllData(): Promise<{ status: string; deleted_rows: Record<string, number> }> {
+  const { data } = await api.delete<{ status: string; deleted_rows: Record<string, number> }>("/workspace/data/all");
+  return data;
+}
+
+export async function dropMetricsData(): Promise<{ status: string; deleted_rows: Record<string, number> }> {
+  const { data } = await api.delete<{ status: string; deleted_rows: Record<string, number> }>("/workspace/data/metrics");
   return data;
 }
