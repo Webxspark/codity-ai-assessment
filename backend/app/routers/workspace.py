@@ -11,7 +11,7 @@ CRUD for the single-row WorkspaceConfig, plus:
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,12 @@ from app.models.schemas import (
     ConnectionTestResult,
 )
 from app.services.github_service import GitHubService
-from app.services.prometheus_poller import PrometheusPoller, start_polling, stop_polling
+from app.services.prometheus_poller import (
+    PrometheusPoller,
+    start_polling,
+    stop_polling,
+    _auto_register_services,
+)
 
 router = APIRouter()
 
@@ -132,9 +137,19 @@ async def test_github_connection(db: AsyncSession = Depends(get_db)):
 async def sync_github_commits(
     hours_back: int = 48,
     limit: int = 30,
+    simulate_recent: bool = Query(
+        False,
+        description="Re-timestamp commits to appear as recent deployments. "
+        "Useful for demos where real commits are days old but you "
+        "want them to correlate with live simulation anomalies.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Fetch recent commits from GitHub and store as DeploymentLog entries."""
+    """Fetch recent commits from GitHub and store as DeploymentLog entries.
+
+    When `simulate_recent=true`, commits are evenly spaced across the
+    last 2 hours so they fall within the anomaly correlation window.
+    """
     config = await _get_config(db)
     if not config or not config.github_repo:
         raise HTTPException(status_code=400, detail="GitHub repo not configured")
@@ -152,6 +167,24 @@ async def sync_github_commits(
             since=since,
             limit=limit,
         )
+
+        # Re-timestamp commits to appear recent for demo/simulation
+        if simulate_recent and new:
+            from app.models.db_models import DeploymentLog
+
+            now = datetime.utcnow()
+            spread_hours = 2.0  # spread commits across last 2h
+            shas = [c["sha"] for c in new]
+            result = await db.execute(
+                select(DeploymentLog).where(DeploymentLog.commit_sha.in_(shas))
+            )
+            deploys = result.scalars().all()
+            for i, deploy in enumerate(deploys):
+                # Space evenly: most recent commit = 5min ago,
+                # oldest = spread_hours ago
+                offset_minutes = 5 + (i * spread_hours * 60 / max(len(deploys), 1))
+                deploy.timestamp = now - timedelta(minutes=offset_minutes)
+
         await db.commit()
         return GitHubSyncResult(synced=len(new), commits=new)
     except Exception as e:
@@ -205,11 +238,63 @@ async def poll_prometheus_once(db: AsyncSession = Depends(get_db)):
     )
     try:
         count, service_names = await poller.poll_once(db)
+        # Auto-register services for anomaly ↔ commit correlation
+        if service_names and config.github_repo:
+            repo_service = config.github_repo.split("/")[-1]
+            await _auto_register_services(
+                db, service_names, repo_service, config.github_repo,
+            )
         await db.commit()
         return {"ingested": count, "services": sorted(service_names)}
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=502, detail=f"Poll failed: {e}")
+    finally:
+        await poller.close()
+
+
+@router.post("/prometheus/backfill")
+async def backfill_prometheus_data(
+    hours_back: float = Query(2.0, ge=0.5, le=24, description="Hours of history to fetch"),
+    step_seconds: int = Query(30, ge=10, le=300, description="Resolution in seconds"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Backfill historical data from Prometheus using range queries.
+
+    Fetches `hours_back` hours of data at `step_seconds` resolution so
+    anomaly detection has a rich dataset from the start instead of
+    starting from zero and waiting for data to accumulate.
+    """
+    config = await _get_config(db)
+    if not config or not config.prometheus_endpoint:
+        raise HTTPException(status_code=400, detail="Prometheus endpoint not configured")
+    if not config.prometheus_queries:
+        raise HTTPException(status_code=400, detail="No queries configured")
+
+    poller = PrometheusPoller(
+        endpoint=config.prometheus_endpoint,
+        queries=config.prometheus_queries,
+    )
+    try:
+        count, service_names = await poller.backfill_range(
+            db, hours_back=hours_back, step_seconds=step_seconds,
+        )
+        # Auto-register services for anomaly ↔ commit correlation
+        if service_names and config.github_repo:
+            repo_service = config.github_repo.split("/")[-1]
+            await _auto_register_services(
+                db, service_names, repo_service, config.github_repo,
+            )
+        await db.commit()
+        return {
+            "backfilled": count,
+            "hours_back": hours_back,
+            "step_seconds": step_seconds,
+            "services": sorted(service_names),
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"Backfill failed: {e}")
     finally:
         await poller.close()
 

@@ -4,11 +4,17 @@ Fetches metrics from a Prometheus endpoint using the instant query API
 and ingests them as MetricDataPoint records. Designed to run as an
 asyncio background task that polls at a configurable interval.
 
+Supports historical backfill via Prometheus range query API so the
+system can be populated with hours of data on first connect instead
+of starting from zero.
+
 After each poll cycle the background loop also:
   1. Auto-registers discovered services in ServiceRegistry, linking them
      to the configured GitHub repo so anomaly ↔ commit correlation works.
-  2. Runs anomaly detection on newly ingested data.
-  3. Periodically syncs recent GitHub commits as DeploymentLog entries.
+  2. Periodically syncs recent GitHub commits as DeploymentLog entries.
+
+Anomaly detection is NOT run automatically — it must be triggered
+manually via POST /api/anomalies/detect.
 """
 
 import asyncio
@@ -17,7 +23,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import MetricDataPoint, ServiceRegistry, WorkspaceConfig
@@ -110,6 +116,109 @@ class PrometheusPoller:
 
         return points
 
+    async def backfill_range(
+        self,
+        db: AsyncSession,
+        hours_back: float = 2.0,
+        step_seconds: int = 60,
+    ) -> tuple[int, set[str]]:
+        """Backfill historical data from Prometheus using range queries.
+
+        Uses /api/v1/query_range to fetch `hours_back` hours of data at
+        `step_seconds` resolution. This lets the system start with a rich
+        dataset for anomaly detection instead of waiting for live data to
+        accumulate.
+
+        Returns (data_points_ingested, set_of_service_names_seen).
+        """
+        end = datetime.utcnow()
+        start = end - timedelta(hours=hours_back)
+        total = 0
+        service_names: set[str] = set()
+
+        for qcfg in self.queries:
+            try:
+                points = await self._execute_range_query(
+                    qcfg, start, end, step_seconds
+                )
+                for point in points:
+                    db.add(point)
+                    service_names.add(point.service_name)
+                total += len(points)
+            except Exception as e:
+                logger.error(
+                    f"Prometheus range query failed: {qcfg.get('query', '?')}: {e}"
+                )
+
+        if total > 0:
+            await db.flush()
+            logger.info(
+                f"Backfilled {total} data points from {hours_back}h of history "
+                f"(step={step_seconds}s, services={sorted(service_names)})"
+            )
+
+        return total, service_names
+
+    async def _execute_range_query(
+        self,
+        qcfg: dict,
+        start: datetime,
+        end: datetime,
+        step_seconds: int,
+    ) -> list[MetricDataPoint]:
+        """Execute a Prometheus range query and return data points."""
+        query = qcfg["query"]
+        service_name = qcfg.get("service_name", "unknown")
+        metric_name = qcfg.get("metric_name", query[:100])
+
+        resp = await self.client.get(
+            f"{self.endpoint}/api/v1/query_range",
+            params={
+                "query": query,
+                "start": start.timestamp(),
+                "end": end.timestamp(),
+                "step": f"{step_seconds}s",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("status") != "success":
+            raise ValueError(f"Prometheus error: {data.get('error', 'unknown')}")
+
+        points = []
+        for result in data.get("data", {}).get("result", []):
+            labels = result.get("metric", {})
+            effective_service = labels.get(
+                "service", labels.get("job", service_name)
+            )
+            effective_metric = labels.get("__name__", metric_name)
+
+            clean_labels = {
+                k: v
+                for k, v in labels.items()
+                if not k.startswith("__") and k not in ("job", "instance")
+            }
+
+            # result["values"] is [[timestamp, value_string], ...]
+            for ts_unix, val_str in result.get("values", []):
+                try:
+                    value = float(val_str)
+                except (ValueError, TypeError):
+                    continue
+
+                points.append(
+                    MetricDataPoint(
+                        service_name=effective_service,
+                        metric_name=effective_metric,
+                        value=round(value, 6),
+                        timestamp=datetime.utcfromtimestamp(ts_unix),
+                        labels=clean_labels if clean_labels else None,
+                    )
+                )
+
+        return points
+
     async def test_connection(self) -> dict:
         """Test connectivity to the Prometheus endpoint.
 
@@ -192,33 +301,6 @@ async def _auto_register_services(
             logger.info(f"Added '{repo_service}' as dependency of '{svc_name}'")
 
 
-async def _auto_detect_anomalies(
-    db: AsyncSession,
-    service_names: set[str],
-) -> int:
-    """Run anomaly detection + correlation for every service that just
-    received new data.  Returns the total number of anomalies found."""
-    from app.services.anomaly_detector import AnomalyDetectorService
-    from app.services.code_context_service import CodeContextService
-
-    detector = AnomalyDetectorService(db)
-    ctx_service = CodeContextService(db)
-    total = 0
-
-    for svc_name in service_names:
-        try:
-            anomalies = await detector.detect(service_name=svc_name)
-            for anomaly in anomalies:
-                await ctx_service.correlate_anomaly(anomaly)
-            total += len(anomalies)
-        except Exception as e:
-            logger.error(f"Auto-detection failed for {svc_name}: {e}")
-
-    if total > 0:
-        logger.info(f"Auto-detected {total} anomalies across {len(service_names)} services")
-    return total
-
-
 async def _auto_sync_github(db: AsyncSession, config: "WorkspaceConfig") -> int:
     """Sync recent GitHub commits as DeploymentLog entries.
     Returns the number of new commits synced."""
@@ -251,9 +333,10 @@ async def _auto_sync_github(db: AsyncSession, config: "WorkspaceConfig") -> int:
 
 
 async def _polling_loop(db_factory, config_id):
-    """Background loop: poll Prometheus → register services → detect anomalies → sync GitHub."""
+    """Background loop: poll Prometheus → register services → sync GitHub."""
 
     cycle_count = 0
+    backfilled = False
 
     while True:
         try:
@@ -273,10 +356,26 @@ async def _polling_loop(db_factory, config_id):
                     queries=config.prometheus_queries or [],
                 )
                 try:
-                    count, service_names = await poller.poll_once(db)
-                    await db.commit()
-                    if count > 0:
-                        logger.info(f"Prometheus poll: ingested {count} data points")
+                    # On first cycle, backfill historical data from Prometheus
+                    # so the system has enough data for anomaly detection
+                    if not backfilled:
+                        bf_count, service_names = await poller.backfill_range(
+                            db, hours_back=2.0, step_seconds=30,
+                        )
+                        await db.commit()
+                        backfilled = True
+                        if bf_count > 0:
+                            logger.info(
+                                f"Initial backfill: {bf_count} data points "
+                                f"from 2h of Prometheus history"
+                            )
+                    else:
+                        count, service_names = await poller.poll_once(db)
+                        await db.commit()
+                        if count > 0:
+                            logger.info(
+                                f"Prometheus poll: ingested {count} data points"
+                            )
                 finally:
                     await poller.close()
 
@@ -286,11 +385,6 @@ async def _polling_loop(db_factory, config_id):
                     await _auto_register_services(
                         db, service_names, repo_service, config.github_repo,
                     )
-                    await db.commit()
-
-                # ── Auto-detect anomalies on new data ────────────────
-                if count > 0:
-                    await _auto_detect_anomalies(db, service_names)
                     await db.commit()
 
                 # ── Periodically sync GitHub commits ─────────────────
