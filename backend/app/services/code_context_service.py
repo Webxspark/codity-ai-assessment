@@ -146,7 +146,7 @@ class CodeContextService:
                 Anomaly.detected_at <= anomaly.detected_at + window,
                 Anomaly.id != anomaly.id,
             )
-        )
+        ).order_by(Anomaly.detected_at.asc()).limit(5)  # cap to avoid N² explosion
 
         result = await self.db.execute(stmt)
         related = result.scalars().all()

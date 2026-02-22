@@ -12,20 +12,13 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, AsyncSessionLocal
 from app.models.db_models import (
     WorkspaceConfig,
-    MetricDataPoint,
-    Anomaly,
-    AnomalyCorrelation,
     DeploymentLog,
-    ConfigChangeLog,
-    ServiceRegistry,
-    ChatConversation,
-    ChatMessage,
 )
 from app.models.schemas import (
     WorkspaceConfigIn,
@@ -333,42 +326,35 @@ async def stop_prometheus_polling(db: AsyncSession = Depends(get_db)):
 async def drop_all_data(db: AsyncSession = Depends(get_db)):
     """Drop all ingested data — allows re-configuring for a different repo/endpoint.
 
-    Preserves the WorkspaceConfig itself.
+    Preserves the WorkspaceConfig itself.  Uses TRUNCATE for speed on
+    large datasets (DELETE on 150K+ rows can take minutes).
     """
     stop_polling()
 
-    # Order matters for FK constraints
-    tables = [
-        ChatMessage,
-        ChatConversation,
-        AnomalyCorrelation,
-        Anomaly,
-        MetricDataPoint,
-        DeploymentLog,
-        ConfigChangeLog,
-        ServiceRegistry,
-    ]
-    counts = {}
-    for model in tables:
-        result = await db.execute(delete(model))
-        counts[model.__tablename__] = result.rowcount
+    from sqlalchemy import text
 
+    tables = [
+        "chat_messages",
+        "chat_conversations",
+        "anomaly_correlations",
+        "anomalies",
+        "metric_data_points",
+        "deployment_logs",
+        "config_change_logs",
+        "service_registry",
+    ]
+    await db.execute(text(f"TRUNCATE TABLE {', '.join(tables)} CASCADE"))
     await db.commit()
-    return {"status": "cleared", "deleted_rows": counts}
+    return {"status": "cleared", "tables_truncated": tables}
 
 
 @router.delete("/data/metrics")
 async def drop_metrics_data(db: AsyncSession = Depends(get_db)):
     """Drop only metric data points and anomalies."""
-    r1 = await db.execute(delete(AnomalyCorrelation))
-    r2 = await db.execute(delete(Anomaly))
-    r3 = await db.execute(delete(MetricDataPoint))
+    from sqlalchemy import text
+
+    await db.execute(text(
+        "TRUNCATE TABLE anomaly_correlations, anomalies, metric_data_points CASCADE"
+    ))
     await db.commit()
-    return {
-        "status": "cleared",
-        "deleted_rows": {
-            "anomaly_correlations": r1.rowcount,
-            "anomalies": r2.rowcount,
-            "metric_data_points": r3.rowcount,
-        },
-    }
+    return {"status": "cleared"}
