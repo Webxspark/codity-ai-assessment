@@ -3,18 +3,24 @@
 Fetches metrics from a Prometheus endpoint using the instant query API
 and ingests them as MetricDataPoint records. Designed to run as an
 asyncio background task that polls at a configurable interval.
+
+After each poll cycle the background loop also:
+  1. Auto-registers discovered services in ServiceRegistry, linking them
+     to the configured GitHub repo so anomaly ↔ commit correlation works.
+  2. Runs anomaly detection on newly ingested data.
+  3. Periodically syncs recent GitHub commits as DeploymentLog entries.
 """
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db_models import MetricDataPoint, WorkspaceConfig
+from app.models.db_models import MetricDataPoint, ServiceRegistry, WorkspaceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +42,19 @@ class PrometheusPoller:
     async def close(self):
         await self.client.aclose()
 
-    async def poll_once(self, db: AsyncSession) -> int:
+    async def poll_once(self, db: AsyncSession) -> tuple[int, set[str]]:
         """Execute all configured queries and ingest results.
 
-        Returns the number of data points ingested.
+        Returns (data_points_ingested, set_of_service_names_seen).
         """
         total = 0
+        service_names: set[str] = set()
         for qcfg in self.queries:
             try:
                 points = await self._execute_query(qcfg)
                 for point in points:
                     db.add(point)
+                    service_names.add(point.service_name)
                 total += len(points)
             except Exception as e:
                 logger.error(f"Prometheus query failed: {qcfg.get('query', '?')}: {e}")
@@ -54,7 +62,7 @@ class PrometheusPoller:
         if total > 0:
             await db.flush()
 
-        return total
+        return total, service_names
 
     async def _execute_query(self, qcfg: dict) -> list[MetricDataPoint]:
         """Execute a single Prometheus instant query and return data points."""
@@ -147,10 +155,105 @@ class PrometheusPoller:
 
 _polling_task: asyncio.Task | None = None
 
+# How many poll cycles between automatic GitHub syncs
+_GITHUB_SYNC_EVERY_N_CYCLES = 10
+
+
+async def _auto_register_services(
+    db: AsyncSession,
+    service_names: set[str],
+    repo_service: str,
+    github_repo: str,
+) -> None:
+    """Ensure each discovered Prometheus service has a ServiceRegistry entry
+    with the configured GitHub repo listed as a dependency.  This is what
+    makes anomaly ↔ commit correlation work across different service names.
+    """
+    for svc_name in service_names:
+        if svc_name == repo_service:
+            continue  # no need to register the repo itself as its own dep
+        result = await db.execute(
+            select(ServiceRegistry).where(ServiceRegistry.service_name == svc_name)
+        )
+        existing = result.scalar_one_or_none()
+
+        if not existing:
+            db.add(ServiceRegistry(
+                service_name=svc_name,
+                description=f"Auto-discovered from Prometheus metrics",
+                repository_url=f"https://github.com/{github_repo}",
+                dependencies=[repo_service],
+            ))
+            logger.info(f"Auto-registered service '{svc_name}' → depends on '{repo_service}'")
+        elif repo_service not in (existing.dependencies or []):
+            deps = list(existing.dependencies or [])
+            deps.append(repo_service)
+            existing.dependencies = deps
+            logger.info(f"Added '{repo_service}' as dependency of '{svc_name}'")
+
+
+async def _auto_detect_anomalies(
+    db: AsyncSession,
+    service_names: set[str],
+) -> int:
+    """Run anomaly detection + correlation for every service that just
+    received new data.  Returns the total number of anomalies found."""
+    from app.services.anomaly_detector import AnomalyDetectorService
+    from app.services.code_context_service import CodeContextService
+
+    detector = AnomalyDetectorService(db)
+    ctx_service = CodeContextService(db)
+    total = 0
+
+    for svc_name in service_names:
+        try:
+            anomalies = await detector.detect(service_name=svc_name)
+            for anomaly in anomalies:
+                await ctx_service.correlate_anomaly(anomaly)
+            total += len(anomalies)
+        except Exception as e:
+            logger.error(f"Auto-detection failed for {svc_name}: {e}")
+
+    if total > 0:
+        logger.info(f"Auto-detected {total} anomalies across {len(service_names)} services")
+    return total
+
+
+async def _auto_sync_github(db: AsyncSession, config: "WorkspaceConfig") -> int:
+    """Sync recent GitHub commits as DeploymentLog entries.
+    Returns the number of new commits synced."""
+    from app.services.github_service import GitHubService, GitHubRateLimitError
+
+    svc = GitHubService(repo=config.github_repo, token=config.github_token)
+    try:
+        since = datetime.utcnow() - timedelta(hours=4)
+        branch = config.github_default_branch or "main"
+        service_name = config.github_repo.split("/")[-1]
+
+        new = await svc.sync_commits_to_deployments(
+            db_session=db,
+            service_name=service_name,
+            branch=branch,
+            since=since,
+            limit=10,
+        )
+        if new:
+            logger.info(f"Auto-synced {len(new)} GitHub commits")
+        return len(new)
+    except GitHubRateLimitError:
+        logger.warning("GitHub rate limit hit during auto-sync — will retry next cycle")
+        return 0
+    except Exception as e:
+        logger.error(f"GitHub auto-sync failed: {e}")
+        return 0
+    finally:
+        await svc.close()
+
 
 async def _polling_loop(db_factory, config_id):
-    """Background loop that polls Prometheus at the configured interval."""
-    from app.models.db_models import WorkspaceConfig
+    """Background loop: poll Prometheus → register services → detect anomalies → sync GitHub."""
+
+    cycle_count = 0
 
     while True:
         try:
@@ -170,12 +273,31 @@ async def _polling_loop(db_factory, config_id):
                     queries=config.prometheus_queries or [],
                 )
                 try:
-                    count = await poller.poll_once(db)
+                    count, service_names = await poller.poll_once(db)
                     await db.commit()
                     if count > 0:
                         logger.info(f"Prometheus poll: ingested {count} data points")
                 finally:
                     await poller.close()
+
+                # ── Auto-register discovered services ────────────────
+                if service_names and config.github_repo:
+                    repo_service = config.github_repo.split("/")[-1]
+                    await _auto_register_services(
+                        db, service_names, repo_service, config.github_repo,
+                    )
+                    await db.commit()
+
+                # ── Auto-detect anomalies on new data ────────────────
+                if count > 0:
+                    await _auto_detect_anomalies(db, service_names)
+                    await db.commit()
+
+                # ── Periodically sync GitHub commits ─────────────────
+                cycle_count += 1
+                if cycle_count % _GITHUB_SYNC_EVERY_N_CYCLES == 0 and config.github_repo:
+                    await _auto_sync_github(db, config)
+                    await db.commit()
 
                 interval = config.prometheus_poll_interval_seconds or 60
 

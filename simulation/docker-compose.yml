@@ -55,7 +55,7 @@ services:
   # ── Prometheus ─────────────────────────────────────────────────────
 
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v3.5.1
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
@@ -69,9 +69,7 @@ services:
   # ── Traffic Generator ──────────────────────────────────────────────
 
   traffic-generator:
-    build:
-      context: .
-      dockerfile: traffic/Dockerfile
+    build: ./traffic
     environment:
       # Comma-separated list of service URLs
       SERVICES: "http://api-gateway:8080,http://payment-service:8080,http://user-service:8080,http://order-service:8080"

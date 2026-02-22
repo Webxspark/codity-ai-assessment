@@ -204,9 +204,9 @@ async def poll_prometheus_once(db: AsyncSession = Depends(get_db)):
         queries=[q for q in (config.prometheus_queries or [])],
     )
     try:
-        count = await poller.poll_once(db)
+        count, service_names = await poller.poll_once(db)
         await db.commit()
-        return {"ingested": count}
+        return {"ingested": count, "services": sorted(service_names)}
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=502, detail=f"Poll failed: {e}")
