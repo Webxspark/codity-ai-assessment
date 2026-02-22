@@ -197,11 +197,9 @@ export function Dashboard() {
             <Suspense fallback={null}>
               <MockDataDialog />
             </Suspense>
-            <Link to="/settings">
-              <Button size="sm" variant="outline">
-                <Settings size={14} />
-                <span className="hidden sm:inline">Settings</span>
-              </Button>
+            <Link to="/settings" className="button button--sm button--outline">
+              <Settings size={14} />
+              <span className="hidden sm:inline">Settings</span>
             </Link>
             <Button
               size="sm"

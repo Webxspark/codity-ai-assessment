@@ -5,8 +5,13 @@ Communicates with the GitHub REST API via httpx to:
 - Get specific commit details and patches
 - Read file contents from the repo
 - Search code within the repo
+
+Includes rate-limit awareness: checks X-RateLimit-Remaining headers
+and backs off automatically when close to exhaustion.
 """
 
+import asyncio
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,10 +19,27 @@ import httpx
 
 GITHUB_API = "https://api.github.com"
 DIFF_MAX_CHARS = 30_000  # cap diff size to avoid blowing LLM context
+RATE_LIMIT_BUFFER = 5  # stop making requests when remaining <= this
+
+logger = logging.getLogger(__name__)
+
+
+class GitHubRateLimitError(Exception):
+    """Raised when GitHub rate limit is exhausted."""
+
+    def __init__(self, reset_at: datetime, remaining: int = 0):
+        self.reset_at = reset_at
+        self.remaining = remaining
+        wait = max(0, int((reset_at - datetime.utcnow()).total_seconds()))
+        super().__init__(
+            f"GitHub rate limit exhausted ({remaining} remaining). "
+            f"Resets in {wait}s at {reset_at.isoformat()}Z. "
+            f"Use a GitHub token for 5 000 req/hr instead of 60."
+        )
 
 
 class GitHubService:
-    """Async GitHub REST API client."""
+    """Async GitHub REST API client with rate-limit awareness."""
 
     def __init__(self, repo: str, token: str | None = None):
         """
@@ -26,6 +48,7 @@ class GitHubService:
             token: GitHub PAT or OAuth token (optional for public repos)
         """
         self.repo = repo
+        self._authenticated = bool(token)
         headers = {
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "CodityAI/1.0",
@@ -40,6 +63,52 @@ class GitHubService:
 
     async def close(self):
         await self.client.aclose()
+
+    # ── Rate-limit helpers ───────────────────────────────────────────
+
+    def _check_rate_limit(self, resp: httpx.Response) -> None:
+        """Inspect response headers and raise if we're about to be limited."""
+        remaining = resp.headers.get("x-ratelimit-remaining")
+        reset_ts = resp.headers.get("x-ratelimit-reset")
+
+        if remaining is not None:
+            remaining_int = int(remaining)
+            limit = resp.headers.get("x-ratelimit-limit", "?")
+            logger.debug(f"GitHub rate limit: {remaining_int}/{limit} remaining")
+
+            if remaining_int <= RATE_LIMIT_BUFFER and reset_ts:
+                reset_at = datetime.utcfromtimestamp(int(reset_ts))
+                raise GitHubRateLimitError(reset_at, remaining_int)
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Make a rate-limit-aware request with retry on 403."""
+        resp = await self.client.request(method, url, **kwargs)
+
+        # Handle 403 rate limit explicitly
+        if resp.status_code == 403:
+            reset_ts = resp.headers.get("x-ratelimit-reset")
+            remaining = int(resp.headers.get("x-ratelimit-remaining", "0"))
+            if reset_ts and remaining == 0:
+                reset_at = datetime.utcfromtimestamp(int(reset_ts))
+                raise GitHubRateLimitError(reset_at, remaining)
+            # Not a rate limit 403 — raise normally
+            resp.raise_for_status()
+
+        resp.raise_for_status()
+        self._check_rate_limit(resp)
+        return resp
+
+    async def get_rate_limit_status(self) -> dict:
+        """Check current rate limit status without consuming a request."""
+        resp = await self.client.get("/rate_limit")
+        data = resp.json()
+        core = data.get("resources", {}).get("core", {})
+        return {
+            "limit": core.get("limit", 0),
+            "remaining": core.get("remaining", 0),
+            "reset_at": datetime.utcfromtimestamp(core.get("reset", 0)).isoformat() + "Z",
+            "authenticated": self._authenticated,
+        }
 
     # ── Commits ──────────────────────────────────────────────────────
 
@@ -58,8 +127,7 @@ class GitHubService:
         if since:
             params["since"] = since.isoformat() + "Z"
 
-        resp = await self.client.get(f"/repos/{self.repo}/commits", params=params)
-        resp.raise_for_status()
+        resp = await self._request("GET", f"/repos/{self.repo}/commits", params=params)
         raw = resp.json()
 
         commits = []
@@ -79,8 +147,7 @@ class GitHubService:
 
         Returns commit info + list of files with their patches.
         """
-        resp = await self.client.get(f"/repos/{self.repo}/commits/{sha}")
-        resp.raise_for_status()
+        resp = await self._request("GET", f"/repos/{self.repo}/commits/{sha}")
         c = resp.json()
 
         files = []
@@ -128,11 +195,10 @@ class GitHubService:
         if ref:
             params["ref"] = ref
 
-        resp = await self.client.get(
-            f"/repos/{self.repo}/contents/{path}",
+        resp = await self._request(
+            "GET", f"/repos/{self.repo}/contents/{path}",
             params=params,
         )
-        resp.raise_for_status()
         data = resp.json()
 
         # Handle file too large for contents API
@@ -157,11 +223,10 @@ class GitHubService:
         if ref:
             params["ref"] = ref
 
-        resp = await self.client.get(
-            f"/repos/{self.repo}/contents/{path}",
+        resp = await self._request(
+            "GET", f"/repos/{self.repo}/contents/{path}",
             params=params,
         )
-        resp.raise_for_status()
         data = resp.json()
 
         if not isinstance(data, list):
@@ -180,11 +245,10 @@ class GitHubService:
         Uses GitHub's code search API.
         """
         search_query = f"{query} repo:{self.repo}"
-        resp = await self.client.get(
-            "/search/code",
+        resp = await self._request(
+            "GET", "/search/code",
             params={"q": search_query, "per_page": min(limit, 30)},
         )
-        resp.raise_for_status()
         data = resp.json()
 
         results = []
@@ -201,8 +265,7 @@ class GitHubService:
 
     async def get_repo_info(self) -> dict:
         """Get basic repo metadata — validates token access."""
-        resp = await self.client.get(f"/repos/{self.repo}")
-        resp.raise_for_status()
+        resp = await self._request("GET", f"/repos/{self.repo}")
         r = resp.json()
         return {
             "full_name": r["full_name"],
@@ -243,13 +306,41 @@ class GitHubService:
             )
             existing_shas = {r[0] for r in result.all()}
 
-        new_deployments = []
-        for commit in commits:
-            if commit["sha"] in existing_shas:
-                continue
+        new_commits = [c for c in commits if c["sha"] not in existing_shas]
 
-            # Fetch full detail with diff
-            detail = await self.get_commit_detail(commit["sha"])
+        if not new_commits:
+            return []
+
+        # Check rate limit before batch-fetching details
+        rl = await self.get_rate_limit_status()
+        available = rl["remaining"]
+        # Each commit detail = 1 API call. Cap to what's safely available.
+        max_details = max(0, available - RATE_LIMIT_BUFFER)
+        if max_details == 0:
+            raise GitHubRateLimitError(
+                datetime.fromisoformat(rl["reset_at"].replace("Z", "+00:00")).replace(tzinfo=None),
+                available,
+            )
+
+        # Limit detail fetches to avoid burning the rate limit
+        fetch_count = min(len(new_commits), max_details, 15)  # hard cap at 15 per sync
+        if fetch_count < len(new_commits):
+            logger.warning(
+                f"Capping commit detail fetches to {fetch_count}/{len(new_commits)} "
+                f"(rate limit remaining: {available})"
+            )
+
+        new_deployments = []
+        for i, commit in enumerate(new_commits[:fetch_count]):
+            # Small delay between requests to be a good API citizen
+            if i > 0:
+                await asyncio.sleep(0.3)
+
+            try:
+                detail = await self.get_commit_detail(commit["sha"])
+            except GitHubRateLimitError:
+                logger.warning(f"Rate limit hit after {i} detail fetches, stopping sync")
+                break
 
             deploy = DeploymentLog(
                 service_name=service_name,

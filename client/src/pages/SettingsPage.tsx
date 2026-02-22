@@ -223,16 +223,14 @@ export function SettingsPage() {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="shrink-0 border-b border-border px-3 sm:px-6 py-3 flex items-center justify-between bg-surface">
+      <header className="shrink-0 border-b border-border px-3 sm:px-6 py-3 flex items-center justify-between bg-surface sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <Link to="/">
-            <Button size="sm" variant="ghost">
-              <ArrowLeft size={14} />
-              Dashboard
-            </Button>
+          <Link className="button button--sm button--ghost" to="/">
+            <ArrowLeft size={14} />
+            <span className="hidden md:block">Dashboard</span>
           </Link>
-          <SettingsIcon size={20} className="text-primary" />
-          <h1 className="text-lg font-bold text-foreground">
+          <SettingsIcon size={20} className="text-primary hidden md:block" />
+          <h1 className="md:text-lg text-base font-bold text-foreground">
             Workspace Settings
           </h1>
         </div>
@@ -358,11 +356,10 @@ export function SettingsPage() {
             {/* Test result */}
             {ghTestResult && (
               <div
-                className={`flex items-center gap-2 text-sm ${
-                  ghTestResult.status === "connected"
+                className={`flex items-center gap-2 text-sm ${ghTestResult.status === "connected"
                     ? "text-success"
                     : "text-danger"
-                }`}
+                  }`}
               >
                 {ghTestResult.status === "connected" ? (
                   <CheckCircle size={14} />
@@ -535,11 +532,10 @@ export function SettingsPage() {
             {/* Test result */}
             {promTestResult && (
               <div
-                className={`flex items-center gap-2 text-sm ${
-                  promTestResult.status === "connected"
+                className={`flex items-center gap-2 text-sm ${promTestResult.status === "connected"
                     ? "text-success"
                     : "text-danger"
-                }`}
+                  }`}
               >
                 {promTestResult.status === "connected" ? (
                   <CheckCircle size={14} />

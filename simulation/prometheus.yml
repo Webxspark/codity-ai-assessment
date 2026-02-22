@@ -1,0 +1,34 @@
+# Prometheus configuration for scraping simulated microservices.
+
+global:
+  scrape_interval: 10s      # scrape every 10 seconds
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: "api-gateway"
+    static_configs:
+      - targets: ["api-gateway:8080"]
+        labels:
+          service: "api-gateway"
+          environment: "simulation"
+
+  - job_name: "payment-service"
+    static_configs:
+      - targets: ["payment-service:8080"]
+        labels:
+          service: "payment-service"
+          environment: "simulation"
+
+  - job_name: "user-service"
+    static_configs:
+      - targets: ["user-service:8080"]
+        labels:
+          service: "user-service"
+          environment: "simulation"
+
+  - job_name: "order-service"
+    static_configs:
+      - targets: ["order-service:8080"]
+        labels:
+          service: "order-service"
+          environment: "simulation"

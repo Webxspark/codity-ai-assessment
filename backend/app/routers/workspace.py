@@ -97,6 +97,20 @@ async def delete_workspace_config(db: AsyncSession = Depends(get_db)):
 
 # ── GitHub ───────────────────────────────────────────────────────────
 
+@router.get("/github/rate-limit")
+async def github_rate_limit(db: AsyncSession = Depends(get_db)):
+    """Check current GitHub API rate limit status."""
+    config = await _get_config(db)
+    if not config or not config.github_repo:
+        raise HTTPException(status_code=400, detail="GitHub repo not configured")
+
+    svc = GitHubService(repo=config.github_repo, token=config.github_token)
+    try:
+        return await svc.get_rate_limit_status()
+    finally:
+        await svc.close()
+
+
 @router.post("/github/test", response_model=ConnectionTestResult)
 async def test_github_connection(db: AsyncSession = Depends(get_db)):
     """Test that GitHub credentials and repo are valid."""
