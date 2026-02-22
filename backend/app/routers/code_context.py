@@ -1,5 +1,6 @@
 """Code context endpoints - services, deployments, config changes."""
 
+import json
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -114,23 +115,44 @@ async def deployment_comparison(
     before_start = deploy_ts - window
     after_end = deploy_ts + window
 
-    # Get all distinct metric names for this service
-    metric_names_result = await db.execute(
-        select(MetricDataPoint.metric_name)
-        .where(MetricDataPoint.service_name == deploy.service_name)
+    # Resolve which monitored services correspond to this deployment.
+    # Deployment service_name is typically the repo name (e.g. "codity-ai-assessment")
+    # while metric data uses Prometheus service names (e.g. "api-gateway").
+    # The ServiceRegistry maps metric services → repo dependencies via JSON array.
+    from sqlalchemy import text as sa_text
+
+    svc_result = await db.execute(
+        sa_text(
+            "SELECT service_name FROM service_registry "
+            "WHERE CAST(dependencies AS jsonb) @> CAST(:dep_json AS jsonb)"
+        ),
+        {"dep_json": json.dumps([deploy.service_name])},
+    )
+    monitored_services = [row[0] for row in svc_result.all()]
+    # Fallback: if no registry mapping, try the deploy service_name directly
+    if not monitored_services:
+        monitored_services = [deploy.service_name]
+
+    # Get all distinct metric names across the monitored services
+    metric_combos_result = await db.execute(
+        select(
+            MetricDataPoint.service_name,
+            MetricDataPoint.metric_name,
+        )
+        .where(MetricDataPoint.service_name.in_(monitored_services))
         .distinct()
     )
-    metric_names = [row[0] for row in metric_names_result.all()]
+    metric_combos = metric_combos_result.all()  # list of (service, metric)
 
     metrics: list[DeploymentComparisonMetric] = []
 
-    for metric_name in metric_names:
+    for svc_name, metric_name in metric_combos:
         # Before window (capped)
         before_result = await db.execute(
             select(MetricDataPoint)
             .where(
                 and_(
-                    MetricDataPoint.service_name == deploy.service_name,
+                    MetricDataPoint.service_name == svc_name,
                     MetricDataPoint.metric_name == metric_name,
                     MetricDataPoint.timestamp >= before_start,
                     MetricDataPoint.timestamp < deploy_ts,
@@ -146,7 +168,7 @@ async def deployment_comparison(
             select(MetricDataPoint)
             .where(
                 and_(
-                    MetricDataPoint.service_name == deploy.service_name,
+                    MetricDataPoint.service_name == svc_name,
                     MetricDataPoint.metric_name == metric_name,
                     MetricDataPoint.timestamp >= deploy_ts,
                     MetricDataPoint.timestamp <= after_end,
@@ -185,7 +207,7 @@ async def deployment_comparison(
 
         metrics.append(
             DeploymentComparisonMetric(
-                metric_name=metric_name,
+                metric_name=f"{svc_name}/{metric_name}",
                 before=MetricWindow(
                     start=before_start.isoformat(),
                     end=deploy_ts.isoformat(),

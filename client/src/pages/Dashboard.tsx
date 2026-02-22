@@ -80,7 +80,7 @@ export function Dashboard() {
 
   const { data: anomalies = [], isLoading: loadingAnomalies, refetch: refetchAnomalies } = useQuery({
     queryKey: ["anomalies"],
-    queryFn: () => fetchAnomalies({ limit: 200 }),
+    queryFn: () => fetchAnomalies({ limit: 500 }),
   });
 
   const { data: deployments = [] } = useQuery({

@@ -23,7 +23,7 @@ async def list_anomalies(
     severity: str | None = Query(None),
     from_ts: datetime | None = Query(None),
     to_ts: datetime | None = Query(None),
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, le=1000),
     db: AsyncSession = Depends(get_db),
 ):
     """List detected anomalies with optional filters."""
