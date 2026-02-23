@@ -12,7 +12,7 @@ and backs off automatically when close to exhaustion.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -30,7 +30,7 @@ class GitHubRateLimitError(Exception):
     def __init__(self, reset_at: datetime, remaining: int = 0):
         self.reset_at = reset_at
         self.remaining = remaining
-        wait = max(0, int((reset_at - datetime.utcnow()).total_seconds()))
+        wait = max(0, int((reset_at - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()))
         super().__init__(
             f"GitHub rate limit exhausted ({remaining} remaining). "
             f"Resets in {wait}s at {reset_at.isoformat()}Z. "
@@ -293,7 +293,7 @@ class GitHubService:
         from app.models.db_models import DeploymentLog
 
         if since is None:
-            since = datetime.utcnow() - timedelta(hours=48)
+            since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=48)
 
         commits = await self.get_recent_commits(branch=branch, since=since, limit=limit)
 

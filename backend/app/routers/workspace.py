@@ -8,7 +8,7 @@ CRUD for the single-row WorkspaceConfig, plus:
 - Drop all data (reset workspace for a different repo/endpoint)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -72,7 +72,7 @@ async def upsert_workspace_config(
     if config:
         for key, val in data.items():
             setattr(config, key, val)
-        config.updated_at = datetime.utcnow()
+        config.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     else:
         config = WorkspaceConfig(**data)
         db.add(config)
@@ -149,7 +149,7 @@ async def sync_github_commits(
 
     svc = GitHubService(repo=config.github_repo, token=config.github_token)
     try:
-        since = datetime.utcnow() - timedelta(hours=hours_back)
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours_back)
         branch = config.github_default_branch or "main"
         service_name = config.github_repo.split("/")[-1]  # use repo name as service
 
@@ -165,7 +165,7 @@ async def sync_github_commits(
         if simulate_recent and new:
             from app.models.db_models import DeploymentLog
 
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
             spread_hours = 2.0  # spread commits across last 2h
             shas = [c["sha"] for c in new]
             result = await db.execute(

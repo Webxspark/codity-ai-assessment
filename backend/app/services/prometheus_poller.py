@@ -18,7 +18,7 @@ After each poll cycle the background loop also:
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -130,7 +130,7 @@ class PrometheusPoller:
 
         Returns (data_points_ingested, set_of_service_names_seen).
         """
-        end = datetime.utcnow()
+        end = datetime.now(timezone.utc).replace(tzinfo=None)
         start = end - timedelta(hours=hours_back)
         total = 0
         service_names: set[str] = set()
@@ -342,7 +342,7 @@ async def _auto_sync_github(db: AsyncSession, config: "WorkspaceConfig") -> int:
 
     svc = GitHubService(repo=config.github_repo, token=config.github_token)
     try:
-        since = datetime.utcnow() - timedelta(hours=4)
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=4)
         branch = config.github_default_branch or "main"
         service_name = config.github_repo.split("/")[-1]
 
@@ -379,7 +379,7 @@ async def _auto_detect_anomalies(db: AsyncSession) -> int:
     from app.services.code_context_service import CodeContextService
 
     try:
-        from_ts = datetime.utcnow() - timedelta(hours=2)
+        from_ts = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
         detector = AnomalyDetectorService(db)
         anomalies = await detector.detect(from_ts=from_ts)
 

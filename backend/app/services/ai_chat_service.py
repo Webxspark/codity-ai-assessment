@@ -14,7 +14,7 @@ Production considerations:
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from typing import AsyncIterator
 
@@ -562,7 +562,7 @@ class AIChatService:
             conditions.append(Anomaly.metric_name == metric_name)
         if severity:
             conditions.append(Anomaly.severity == severity)
-        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours_back)
         conditions.append(Anomaly.detected_at >= cutoff)
         if conditions:
             stmt = stmt.where(and_(*conditions))
@@ -607,7 +607,7 @@ class AIChatService:
         conditions = []
         if service_name:
             conditions.append(DeploymentLog.service_name == service_name)
-        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours_back)
         conditions.append(DeploymentLog.timestamp >= cutoff)
         stmt = stmt.where(and_(*conditions))
         stmt = stmt.order_by(DeploymentLog.timestamp.desc()).limit(min(limit, 20))
@@ -638,7 +638,7 @@ class AIChatService:
         conditions = []
         if service_name:
             conditions.append(ConfigChangeLog.service_name == service_name)
-        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours_back)
         conditions.append(ConfigChangeLog.timestamp >= cutoff)
         stmt = stmt.where(and_(*conditions))
         stmt = stmt.order_by(ConfigChangeLog.timestamp.desc()).limit(min(limit, 20))
@@ -699,7 +699,7 @@ class AIChatService:
         limit: int = 60,
     ) -> list[dict]:
         """Query raw metric data points."""
-        cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours_back)
         stmt = (
             select(MetricDataPoint)
             .where(
