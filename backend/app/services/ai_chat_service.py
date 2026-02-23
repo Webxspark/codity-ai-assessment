@@ -47,6 +47,12 @@ You have access to tools that let you query the system's database AND the connec
 - When the user asks about deployments or config changes — call the relevant tool.
 - When the user asks about system health — call get_metrics_summary.
 
+CRITICAL INSTRUCTIONS FOR REPOSITORY NAVIGATION:
+- NEVER guess file paths. If you don't know the exact path, call browse_repository first to discover the directory structure.
+- When investigating a deployment diff, the diff shows changed file paths — use those paths directly with get_file_content.
+- When the user asks about a file but gives only a partial name (e.g. "code_context.py"), call browse_repository with path "" to see the top-level structure, then navigate into likely directories (e.g. "backend/app/routers") to find the file before calling get_file_content.
+- Always build paths incrementally: browse root → browse subdirectory → read file. Do NOT fabricate paths.
+
 CRITICAL INSTRUCTIONS:
 1. NEVER say "I don't have data" without first trying to fetch it using your tools.
 2. If context is already provided, check it first — but still use tools if you need more detail.
@@ -308,6 +314,32 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "browse_repository",
+            "description": (
+                "List files and directories at a given path in the connected GitHub repository. "
+                "Use this BEFORE get_file_content when you don't know the exact file path. "
+                "Call with path='' to see the top-level directory structure, then navigate deeper "
+                "into subdirectories. Each entry shows name, type (file or dir), path, and size."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory path to list (e.g. '' for root, 'backend/app/routers' for a subdirectory)",
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Branch or commit SHA (optional, defaults to default branch)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -503,6 +535,7 @@ class AIChatService:
             "get_code_diff": self._tool_get_code_diff,
             "get_file_content": self._tool_get_file_content,
             "search_code": self._tool_search_code,
+            "browse_repository": self._tool_browse_repository,
         }
         handler = handlers.get(name)
         if not handler:
@@ -776,5 +809,17 @@ class AIChatService:
             return await svc.search_code(query, limit=limit)
         except Exception as e:
             return [{"error": f"Code search failed: {e}"}]
+        finally:
+            await svc.close()
+
+    async def _tool_browse_repository(self, path: str = "", ref: str | None = None) -> list[dict]:
+        """List files and directories at a path in the GitHub repo."""
+        svc = await self._get_github_service()
+        if not svc:
+            return [{"error": "GitHub not configured — cannot browse repository"}]
+        try:
+            return await svc.get_directory_listing(path, ref=ref)
+        except Exception as e:
+            return [{"error": f"Failed to browse repository: {e}"}]
         finally:
             await svc.close()

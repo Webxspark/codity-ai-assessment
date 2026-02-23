@@ -419,7 +419,15 @@ class AnomalyDetectorService:
                 f"normal bounds for {ewma_r.details.get('consecutive_outside', '?')} consecutive data points."
             )
         else:
-            parts.append(f"The metric shows a pattern change from its expected behavior.")
+            # Pattern change — give detailed reasoning
+            direction = "above" if value > baseline_mean else "below"
+            deviation = abs(value - baseline_mean)
+            parts.append(
+                f"The metric shows a pattern change — the value of {value:.2f} is {deviation:.2f} "
+                f"{direction} the baseline mean ({baseline_mean:.2f}) and falls outside the "
+                f"expected distribution. Multiple detection methods flagged this as anomalous "
+                f"without it fitting the typical spike, drop, or sustained deviation patterns."
+            )
 
         # Detection method breakdown
         methods = []

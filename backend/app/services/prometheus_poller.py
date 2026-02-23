@@ -12,9 +12,8 @@ After each poll cycle the background loop also:
   1. Auto-registers discovered services in ServiceRegistry, linking them
      to the configured GitHub repo so anomaly ↔ commit correlation works.
   2. Periodically syncs recent GitHub commits as DeploymentLog entries.
-
-Anomaly detection is NOT run automatically — it must be triggered
-manually via POST /api/anomalies/detect.
+  3. Periodically runs anomaly detection on recent data so alerts appear
+     automatically without requiring manual triggering.
 """
 
 import asyncio
@@ -266,6 +265,8 @@ _polling_task: asyncio.Task | None = None
 
 # How many poll cycles between automatic GitHub syncs
 _GITHUB_SYNC_EVERY_N_CYCLES = 10
+# How many poll cycles between automatic anomaly detection runs
+_AUTO_DETECT_EVERY_N_CYCLES = 5
 
 
 async def _auto_register_services(
@@ -301,6 +302,39 @@ async def _auto_register_services(
             logger.info(f"Added '{repo_service}' as dependency of '{svc_name}'")
 
 
+async def _update_service_modules(
+    db: AsyncSession,
+    deployments: list[dict],
+) -> None:
+    """Extract module/directory names from deployment changed files and update
+    the ServiceRegistry.modules field.  This creates the metric → code linkage
+    required by the assignment: each monitored service is associated with the
+    code modules (directories) that were changed in nearby deployments.
+    """
+    # Collect all unique top-level modules from changed files
+    modules: set[str] = set()
+    for deploy in deployments:
+        for filepath in deploy.get("changed_files", []):
+            parts = filepath.split("/")
+            if len(parts) > 1:
+                modules.add(parts[0])  # top-level directory
+            else:
+                modules.add(filepath)   # root-level file
+
+    if not modules:
+        return
+
+    # Update all registered services with these modules
+    result = await db.execute(select(ServiceRegistry))
+    services = result.scalars().all()
+    for svc in services:
+        existing = set(svc.modules or [])
+        combined = existing | modules
+        if combined != existing:
+            svc.modules = sorted(combined)
+            logger.info(f"Updated modules for '{svc.service_name}': {svc.modules}")
+
+
 async def _auto_sync_github(db: AsyncSession, config: "WorkspaceConfig") -> int:
     """Sync recent GitHub commits as DeploymentLog entries.
     Returns the number of new commits synced."""
@@ -321,6 +355,9 @@ async def _auto_sync_github(db: AsyncSession, config: "WorkspaceConfig") -> int:
         )
         if new:
             logger.info(f"Auto-synced {len(new)} GitHub commits")
+            # Extract modules (top-level directories) from changed files
+            # and add them to all registered services for code linkage
+            await _update_service_modules(db, new)
         return len(new)
     except GitHubRateLimitError:
         logger.warning("GitHub rate limit hit during auto-sync — will retry next cycle")
@@ -330,6 +367,35 @@ async def _auto_sync_github(db: AsyncSession, config: "WorkspaceConfig") -> int:
         return 0
     finally:
         await svc.close()
+
+
+async def _auto_detect_anomalies(db: AsyncSession) -> int:
+    """Run anomaly detection on recent data and correlate any findings.
+
+    Only scans the last 2 hours of data to keep it lightweight.
+    Returns the number of new anomalies detected.
+    """
+    from app.services.anomaly_detector import AnomalyDetectorService
+    from app.services.code_context_service import CodeContextService
+
+    try:
+        from_ts = datetime.utcnow() - timedelta(hours=2)
+        detector = AnomalyDetectorService(db)
+        anomalies = await detector.detect(from_ts=from_ts)
+
+        if anomalies:
+            ctx_service = CodeContextService(db)
+            for anomaly in anomalies:
+                await ctx_service.correlate_anomaly(anomaly)
+
+            logger.info(
+                f"Auto-detection: found {len(anomalies)} new anomalies in last 2h"
+            )
+
+        return len(anomalies)
+    except Exception as e:
+        logger.error(f"Auto-detection failed: {e}")
+        return 0
 
 
 async def _polling_loop(db_factory, config_id):
@@ -392,7 +458,10 @@ async def _polling_loop(db_factory, config_id):
                 if cycle_count % _GITHUB_SYNC_EVERY_N_CYCLES == 0 and config.github_repo:
                     await _auto_sync_github(db, config)
                     await db.commit()
-
+                # ── Periodically auto-detect anomalies ─────────────────
+                if cycle_count % _AUTO_DETECT_EVERY_N_CYCLES == 0:
+                    await _auto_detect_anomalies(db)
+                    await db.commit()
                 interval = config.prometheus_poll_interval_seconds or 60
 
         except Exception as e:
