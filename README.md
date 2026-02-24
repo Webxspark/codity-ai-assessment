@@ -216,6 +216,19 @@ docker compose up --build -d
 open http://localhost:8000
 ```
 
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | `postgresql+asyncpg://codityai:codityai@db:5432/codityai` | PostgreSQL connection string |
+| `OPENAI_API_BASE` | `http://localhost:4000/v1` | LLM API endpoint (OpenAI-compatible) |
+| `OPENAI_API_KEY` | — | API key for the LLM provider |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model name to use |
+| `AI_MAX_TOOL_ROUNDS` | `5` | Max autonomous tool-calling rounds per chat message |
+| `AI_MAX_HISTORY_MSGS` | `30` | Max conversation history messages sent to the LLM |
+| `APP_ENV` | `development` | Application environment |
+| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed CORS origins (comma-separated) |
+
 Click **"Mock Data"** in the top bar to generate realistic data with planted anomaly patterns, then click **"Run Detection"** to trigger the detection engine.
 
 ### Real Metrics + GitHub
