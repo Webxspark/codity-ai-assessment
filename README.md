@@ -4,10 +4,10 @@
 
 **Live Demo:** [codityai-assessment.alanchris.me](https://codityai-assessment.alanchris.me/)
 
-**Demo Recording:** [YouTube](https://youtube.com/soulof8d)
+**Demo Recording:** [YouTube](https://youtu.be/j9CFpUkUG_k)
 <details>
 <summary>Recordings (prev versions)</summary>
-
+* **Latest Demo** - Real data. [[YouTube](https://youtu.be/j9CFpUkUG_k)]
 *  **Initial Demo** — Mock data with injected anomalies. [[YouTube](https://youtu.be/0j8n9sKzLW9M)]
 
 </details>
