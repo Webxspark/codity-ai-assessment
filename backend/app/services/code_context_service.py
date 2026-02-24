@@ -19,8 +19,8 @@ class CodeContextService:
     """Associates anomalies with code changes and service context."""
 
     # Look-back windows for correlating changes to anomalies
-    DEPLOYMENT_WINDOW_MINUTES = 60
-    CONFIG_CHANGE_WINDOW_MINUTES = 60
+    DEPLOYMENT_WINDOW_MINUTES = 360  # 6 hours — commits may be hours old
+    CONFIG_CHANGE_WINDOW_MINUTES = 120
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -146,7 +146,7 @@ class CodeContextService:
                 Anomaly.detected_at <= anomaly.detected_at + window,
                 Anomaly.id != anomaly.id,
             )
-        )
+        ).order_by(Anomaly.detected_at.asc()).limit(5)  # cap to avoid N² explosion
 
         result = await self.db.execute(stmt)
         related = result.scalars().all()
@@ -213,7 +213,7 @@ class CodeContextService:
         from sqlalchemy.orm import selectinload
 
         MAX_TREND_POINTS = 60     # ≈1 per minute for 1h
-        CONTEXT_WINDOW_MIN = 120  # live query window (2h)
+        CONTEXT_WINDOW_MIN = 360  # live query window (6h)
 
         # ── 1. Fetch the anomaly with stored correlations ────────────
         stmt = (

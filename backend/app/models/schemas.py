@@ -195,3 +195,48 @@ class DeploymentComparisonOut(BaseModel):
     deployment: DeploymentLogOut
     window_minutes: int
     metrics: list[DeploymentComparisonMetric]
+
+
+# ── Workspace Config ─────────────────────────────────────────────────
+
+class PrometheusQueryConfig(BaseModel):
+    query: str = Field(..., description="PromQL expression")
+    service_name: str = Field("unknown", description="Service name to tag ingested points with")
+    metric_name: str = Field("", description="Friendly metric name (defaults to __name__ label)")
+
+
+class WorkspaceConfigIn(BaseModel):
+    name: str = "default"
+    description: str | None = None
+    github_repo: str | None = Field(None, description="owner/repo")
+    github_token: str | None = Field(None, description="GitHub PAT")
+    github_default_branch: str | None = "main"
+    prometheus_endpoint: str | None = Field(None, description="e.g. http://prometheus:9090")
+    prometheus_poll_interval_seconds: int = 60
+    prometheus_queries: list[PrometheusQueryConfig] | None = None
+
+
+class WorkspaceConfigOut(BaseModel):
+    id: UUID
+    name: str
+    description: str | None = None
+    github_repo: str | None = None
+    github_default_branch: str | None = None
+    prometheus_endpoint: str | None = None
+    prometheus_poll_interval_seconds: int = 60
+    prometheus_queries: list[dict] | None = None
+    is_polling: str = "false"
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class GitHubSyncResult(BaseModel):
+    synced: int
+    commits: list[dict]
+
+
+class ConnectionTestResult(BaseModel):
+    status: str
+    details: dict = {}

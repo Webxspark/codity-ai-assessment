@@ -15,7 +15,7 @@ import asyncio
 import uuid
 import math
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
@@ -36,7 +36,7 @@ TOTAL_POINTS = DURATION_HOURS * 60 // INTERVAL_MINUTES  # 1440
 
 def _base_date() -> datetime:
     """Use yesterday midnight so the 24-hour window looks recent."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     return now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
 
 

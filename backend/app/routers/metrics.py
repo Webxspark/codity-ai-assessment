@@ -47,10 +47,15 @@ async def query_metrics(
     metric_name: str | None = Query(None),
     from_ts: datetime | None = Query(None),
     to_ts: datetime | None = Query(None),
-    limit: int = Query(1000, le=10000),
+    limit: int = Query(1440, le=10000),
     db: AsyncSession = Depends(get_db),
 ):
-    """Query metric data points with optional filters."""
+    """Query metric data points with optional filters.
+
+    When no ``from_ts`` is supplied the endpoint defaults to returning
+    the **most recent** ``limit`` rows (ordered ascending) so that UI
+    charts display the latest window instead of the oldest data.
+    """
     stmt = select(MetricDataPoint)
     conditions = []
     if service_name:
@@ -63,7 +68,18 @@ async def query_metrics(
         conditions.append(MetricDataPoint.timestamp <= to_ts)
     if conditions:
         stmt = stmt.where(and_(*conditions))
-    stmt = stmt.order_by(MetricDataPoint.timestamp.asc()).limit(limit)
+
+    if from_ts is None:
+        # Return the newest `limit` rows, ordered ASC for chart display.
+        # We use a subquery to grab the latest rows, then re-sort.
+        from sqlalchemy import desc
+        inner = stmt.order_by(MetricDataPoint.timestamp.desc()).limit(limit).subquery()
+        stmt = select(MetricDataPoint).join(
+            inner, MetricDataPoint.id == inner.c.id
+        ).order_by(MetricDataPoint.timestamp.asc())
+    else:
+        stmt = stmt.order_by(MetricDataPoint.timestamp.asc()).limit(limit)
+
     result = await db.execute(stmt)
     return result.scalars().all()
 

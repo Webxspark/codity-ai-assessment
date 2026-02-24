@@ -15,6 +15,7 @@ import {
   PanelRightClose,
   LayoutDashboard,
   History,
+  Settings,
 } from "lucide-react";
 
 import {
@@ -26,6 +27,7 @@ import {
   triggerDetection,
 } from "../api/client";
 import type { Anomaly, MetricDataPoint } from "../types";
+import { Link } from "react-router-dom";
 
 // ── Eagerly loaded (lightweight / always visible) ───────────────────
 import { ServiceOverview } from "../components/ServiceOverview";
@@ -78,7 +80,7 @@ export function Dashboard() {
 
   const { data: anomalies = [], isLoading: loadingAnomalies, refetch: refetchAnomalies } = useQuery({
     queryKey: ["anomalies"],
-    queryFn: () => fetchAnomalies({ limit: 100 }),
+    queryFn: () => fetchAnomalies({ limit: 500 }),
   });
 
   const { data: deployments = [] } = useQuery({
@@ -195,6 +197,10 @@ export function Dashboard() {
             <Suspense fallback={null}>
               <MockDataDialog />
             </Suspense>
+            <Link to="/settings" className="button button--sm button--outline">
+              <Settings size={14} />
+              <span className="hidden sm:inline">Settings</span>
+            </Link>
             <Button
               size="sm"
               variant="outline"

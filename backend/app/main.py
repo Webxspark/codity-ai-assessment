@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import engine, init_db
-from app.routers import metrics, anomalies, code_context, chat, seed
+from app.routers import metrics, anomalies, code_context, chat, seed, workspace
 
 # ── Static file paths ────────────────────────────────────────────────
 # In Docker the Vite build is copied to /app/static.
@@ -51,6 +51,7 @@ app.include_router(anomalies.router, prefix="/api/anomalies", tags=["Anomalies"]
 app.include_router(code_context.router, prefix="/api/code-context", tags=["Code Context"])
 app.include_router(chat.router, prefix="/api/chat", tags=["AI Chat"])
 app.include_router(seed.router, prefix="/api/seed", tags=["Mock Data Seeding"])
+app.include_router(workspace.router, prefix="/api/workspace", tags=["Workspace Config"])
 
 
 @app.get("/api/health", response_model=dict)

@@ -1,0 +1,86 @@
+# ─────────────────────────────────────────────────────────────────────
+# CodityAI Simulation Environment
+#
+# Spins up 4 simulated microservices + Prometheus + a traffic generator
+# that creates realistic traffic patterns including periodic anomalies.
+#
+# Usage:
+#   cd simulation
+#   docker compose up -d
+#
+# Then point CodityAI's Prometheus endpoint to:
+#   http://host.docker.internal:9999   (or http://<host-ip>:9999)
+#
+# The services expose metrics at :8080/metrics and Prometheus scrapes
+# them every 10 seconds. The traffic generator hits all services with
+# normal traffic and injects anomalies (latency spikes, error bursts,
+# CPU/memory surges) on a randomized schedule.
+# ─────────────────────────────────────────────────────────────────────
+
+services:
+  # ── Simulated Microservices ──────────────────────────────────────
+
+  api-gateway:
+    build: ./services
+    environment:
+      SERVICE_NAME: api-gateway
+      PORT: "8080"
+    ports:
+      - "8081:8080"
+
+  payment-service:
+    build: ./services
+    environment:
+      SERVICE_NAME: payment-service
+      PORT: "8080"
+    ports:
+      - "8082:8080"
+
+  user-service:
+    build: ./services
+    environment:
+      SERVICE_NAME: user-service
+      PORT: "8080"
+    ports:
+      - "8083:8080"
+
+  order-service:
+    build: ./services
+    environment:
+      SERVICE_NAME: order-service
+      PORT: "8080"
+    ports:
+      - "8084:8080"
+
+  # ── Prometheus ─────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v3.5.1
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9999:9090"
+    depends_on:
+      - api-gateway
+      - payment-service
+      - user-service
+      - order-service
+
+  # ── Traffic Generator ──────────────────────────────────────────────
+
+  traffic-generator:
+    build: ./traffic
+    environment:
+      # Comma-separated list of service URLs
+      SERVICES: "http://api-gateway:8080,http://payment-service:8080,http://user-service:8080,http://order-service:8080"
+      # How often to send traffic (seconds)
+      TRAFFIC_INTERVAL: "5"
+      # How often to inject anomalies (seconds) — randomized ±30%
+      ANOMALY_INTERVAL: "120"
+      # How long anomalies last (seconds)
+      ANOMALY_DURATION: "60"
+    depends_on:
+      - api-gateway
+      - payment-service
+      - user-service
+      - order-service
