@@ -33,9 +33,6 @@ from app.models.db_models import (
 )
 from app.services.code_context_service import CodeContextService
 
-MAX_HISTORY_MSGS = 30
-MAX_TOOL_ROUNDS = 5  # max autonomous data-fetching rounds before forcing a reply
-
 SYSTEM_PROMPT = """You are CodityAI, a senior SRE and observability assistant. You help engineers understand metric anomalies, correlate them with code changes, deployments, and configuration changes, and suggest actionable fixes.
 
 You have access to tools that let you query the system's database AND the connected GitHub repository. USE THEM PROACTIVELY:
@@ -354,6 +351,8 @@ class AIChatService:
             base_url=settings.OPENAI_API_BASE,
         )
         self.model = settings.OPENAI_MODEL
+        self.max_tool_rounds = settings.AI_MAX_TOOL_ROUNDS
+        self.max_history_msgs = settings.AI_MAX_HISTORY_MSGS
         self.ctx_service = CodeContextService(db)
 
     async def get_or_create_conversation(
@@ -431,7 +430,7 @@ class AIChatService:
 
         # ── Tool-calling loop (streaming throughout) ────────────────
         try:
-            for _round in range(MAX_TOOL_ROUNDS):
+            for _round in range(self.max_tool_rounds):
                 stream = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
@@ -731,7 +730,7 @@ class AIChatService:
             select(ChatMessage)
             .where(ChatMessage.conversation_id == conversation_id)
             .order_by(ChatMessage.created_at.desc())
-            .limit(MAX_HISTORY_MSGS)
+            .limit(self.max_history_msgs)
         )
         # Reverse so chronological order is preserved
         return list(reversed(result.scalars().all()))

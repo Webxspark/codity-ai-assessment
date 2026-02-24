@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     PROMETHEUS_ENDPOINT: str = ""  # e.g. "http://prometheus:9090"
     PROMETHEUS_POLL_INTERVAL_SECONDS: int = 60
 
+    # AI Chat
+    AI_MAX_TOOL_ROUNDS: int = 5
+    AI_MAX_HISTORY_MSGS: int = 30
+
     # App
     APP_ENV: str = "development"
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
