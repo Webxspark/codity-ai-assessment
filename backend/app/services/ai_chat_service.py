@@ -460,10 +460,10 @@ class AIChatService:
                             idx = tc_delta.index
                             if idx not in tool_calls_acc:
                                 tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                            if tc_delta.id:
+                            if tc_delta.id and not tool_calls_acc[idx]["id"]:
                                 tool_calls_acc[idx]["id"] = tc_delta.id
                             if tc_delta.function:
-                                if tc_delta.function.name:
+                                if tc_delta.function.name and not tool_calls_acc[idx]["name"]:
                                     tool_calls_acc[idx]["name"] = tc_delta.function.name
                                 if tc_delta.function.arguments:
                                     tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
