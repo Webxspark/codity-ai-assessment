@@ -7,8 +7,14 @@
 **Demo Recording:** [YouTube](https://youtu.be/j9CFpUkUG_k)
 <details>
 <summary>Recordings (prev versions)</summary>
-* **Latest Demo** - Real data. [[YouTube](https://youtu.be/j9CFpUkUG_k)]
-*  **Initial Demo** — Mock data with injected anomalies. [[YouTube](https://youtu.be/0j8n9sKzLW9M)]
+  <ul>
+    <li>
+        <b>Latest Demo</b> — Real data. [<a href="https://youtu.be/j9CFpUkUG_k" target="_blank">YouTube</a>]
+    </li>
+    <li>
+      <b>Initial Demo</b> — Mock data with injected anomalies. [<a href="https://youtu.be/NPR2kKzLW9M" target="_blank">YouTube</a>]
+    </li>
+  </ul>
 
 </details>
 
@@ -21,7 +27,6 @@
   - [What I Learned and Explored](#what-i-learned-and-explored)
   - [How I Guided the AI Agent](#how-i-guided-the-ai-agent)
 - [System Architecture](#system-architecture)
-  - [High-Level Architecture](#high-level-architecture)
   - [Data Ingestion Pipeline](#data-ingestion-pipeline)
   - [Request Flow: From Question to Answer](#request-flow-from-question-to-answer)
 - [Anomaly Detection Engine](#anomaly-detection-engine)
