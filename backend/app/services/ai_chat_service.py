@@ -464,7 +464,7 @@ class AIChatService:
                                 tool_calls_acc[idx]["id"] = tc_delta.id
                             if tc_delta.function:
                                 if tc_delta.function.name:
-                                    tool_calls_acc[idx]["name"] += tc_delta.function.name
+                                    tool_calls_acc[idx]["name"] = tc_delta.function.name
                                 if tc_delta.function.arguments:
                                     tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
 
